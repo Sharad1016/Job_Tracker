@@ -1,0 +1,5 @@
+.env
+*.sqlite3
+*API key*.txt
+__pycache__/
+*.pyc
