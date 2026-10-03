@@ -1,0 +1,78 @@
+"""
+Phase 2: turns a messy, pasted job description into clean structured
+fields using Gemini. This same function will later be reused by the
+scraper in Phase 5 - it doesn't care whether the text was pasted by
+hand or pulled off a job board.
+"""
+
+import os
+import json
+from google import genai
+from dotenv import load_dotenv
+
+load_dotenv()
+
+_client = None
+
+
+def _get_client():
+    """Create the Gemini client once and reuse it (avoids reconnecting on every call)."""
+    global _client
+    if _client is None:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "GEMINI_API_KEY not found. Add it to your .env file."
+            )
+        _client = genai.Client(api_key=api_key)
+    return _client
+
+
+EXTRACTION_PROMPT = """You are extracting structured data from a job posting.
+Read the job description below and return ONLY a JSON object with these exact keys:
+
+- title: job title (string, "" if not found)
+- company: company name (string, "" if not found)
+- location: job location (string, "" if not found)
+- skills_required: list of skill names mentioned, e.g. ["Python", "SQL"] (list of strings, [] if none found)
+- salary_range: salary info as written, or "" if not mentioned
+- deadline: application deadline in YYYY-MM-DD format if mentioned, otherwise null
+
+Do not guess or invent information that isn't in the text. Leave fields empty/null if unsure.
+
+Job description:
+---
+{text}
+---
+"""
+
+
+def extract_job_fields(raw_text: str) -> dict:
+    """
+    Sends raw_text to Gemini and returns a dict matching JobPosting's fields.
+    Raises ValueError if Gemini's response can't be parsed as valid JSON.
+    """
+    client = _get_client()
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=EXTRACTION_PROMPT.format(text=raw_text),
+        config={
+            "response_mime_type": "application/json",
+        },
+    )
+
+    try:
+        data = json.loads(response.text)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise ValueError(f"Gemini did not return valid JSON: {e}")
+
+    # Defensive defaults - never trust external output blindly
+    return {
+        "title": data.get("title") or "",
+        "company": data.get("company") or "",
+        "location": data.get("location") or "",
+        "skills_required": data.get("skills_required") or [],
+        "salary_range": data.get("salary_range") or "",
+        "deadline": data.get("deadline") or None,
+    }
