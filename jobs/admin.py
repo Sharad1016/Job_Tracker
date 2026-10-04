@@ -1,5 +1,10 @@
 from django.contrib import admin
-from .models import JobPosting, Application
+from .models import JobPosting, Application, Profile
+
+
+@admin.register(Profile)
+class ProfileAdmin(admin.ModelAdmin):
+    list_display = ("name", "skills", "updated_at")
 
 
 @admin.register(JobPosting)

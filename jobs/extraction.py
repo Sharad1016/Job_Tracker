@@ -55,7 +55,7 @@ def extract_job_fields(raw_text: str) -> dict:
     client = _get_client()
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-flash-latest",
         contents=EXTRACTION_PROMPT.format(text=raw_text),
         config={
             "response_mime_type": "application/json",

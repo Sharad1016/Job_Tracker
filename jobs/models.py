@@ -1,6 +1,26 @@
 from django.db import models
 
 
+class Profile(models.Model):
+    """
+    Represents the person using this tracker (just you, for now).
+    Kept as its own model - separate from JobPosting - because your
+    skillset exists independently of any job. It doesn't belong to
+    a posting; the matching engine reads from both and compares them.
+    """
+
+    name = models.CharField(max_length=100, default="My Profile")
+    skills = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='Your skills, e.g. ["Python", "Django", "Flask", "SQL"]',
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.name
+
+
 class JobPosting(models.Model):
     """
     One row = one job posting, whether pasted manually (Phase 2)
