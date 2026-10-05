@@ -8,6 +8,13 @@
     <div class="container py-5">
         <h1 class="mb-4">Paste a Job Description</h1>
 
+        {% if not profile_exists %}
+            <div class="alert alert-danger">
+                No Profile found — every match score will show 0%. Create one at
+                <a href="/admin/jobs/profile/add/">/admin/jobs/profile/add/</a> first.
+            </div>
+        {% endif %}
+
         {% if messages %}
             {% for message in messages %}
                 <div class="alert {% if message.tags == 'success' %}alert-success{% else %}alert-warning{% endif %}">
@@ -30,6 +37,7 @@
                     <th>Company</th>
                     <th>Skills</th>
                     <th>Salary</th>
+                    <th>Match Score</th>
                 </tr>
             </thead>
             <tbody>
@@ -39,9 +47,10 @@
                     <td>{{ job.company }}</td>
                     <td>{{ job.skills_required|join:", " }}</td>
                     <td>{{ job.salary_range }}</td>
+                    <td>{{ job.match_score }}%</td>
                 </tr>
                 {% empty %}
-                <tr><td colspan="4">No jobs yet.</td></tr>
+                <tr><td colspan="5">No jobs yet.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

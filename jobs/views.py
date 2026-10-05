@@ -4,6 +4,7 @@ from django.contrib import messages
 from .forms import PasteJobForm
 from .models import JobPosting
 from .extraction import extract_job_fields
+from .matching import score_job, get_my_profile
 
 
 def paste_job(request):
@@ -29,8 +30,17 @@ def paste_job(request):
                 job.skills_required = extracted["skills_required"]
                 job.salary_range = extracted["salary_range"]
                 job.deadline = extracted["deadline"]
+
+                # Score against your Profile now that skills_required is populated.
+                # This has to happen AFTER extraction, not before - there's nothing
+                # to score until the AI has actually filled in skills_required.
+                job.match_score = score_job(job)
+
                 job.save()
-                messages.success(request, f"Extracted: {job.title} at {job.company}")
+                messages.success(
+                    request,
+                    f"Extracted: {job.title} at {job.company} (match: {job.match_score}%)",
+                )
             except (ValueError, RuntimeError) as e:
                 # The job row still exists with raw_text saved - extraction
                 # can be retried later without losing anything.
@@ -40,5 +50,10 @@ def paste_job(request):
     else:
         form = PasteJobForm()
 
-    recent_jobs = JobPosting.objects.all()[:10]
-    return render(request, "jobs/paste_job.html", {"form": form, "recent_jobs": recent_jobs})
+    recent_jobs = JobPosting.objects.order_by("-created_at")[:10]
+    profile_exists = get_my_profile() is not None
+    return render(
+        request,
+        "jobs/paste_job.html",
+        {"form": form, "recent_jobs": recent_jobs, "profile_exists": profile_exists},
+    )
