@@ -8,14 +8,12 @@ be instant and free, not something that costs an API call every time.
 from .models import Profile
 
 
-def get_my_profile():
+def get_profile_for(user):
     """
-    Returns the single Profile this tracker is built around, or None
-    if one hasn't been created yet. We don't enforce "only one Profile"
-    at the database level (see models.py) - this function just always
-    reads the first one, which is all a single-user tool needs.
+    Returns the given user's Profile, or None if they haven't set one up
+    yet (e.g. just signed up and haven't visited the profile page).
     """
-    return Profile.objects.first()
+    return Profile.objects.filter(user=user).first()
 
 
 def calculate_match_score(job_skills: list, profile_skills: list) -> float:
@@ -43,14 +41,14 @@ def calculate_match_score(job_skills: list, profile_skills: list) -> float:
     return round(score, 1)
 
 
-def score_job(job) -> float:
+def score_job(job, user) -> float:
     """
-    Convenience wrapper: takes a JobPosting instance, pulls your profile,
-    and returns its match score. Returns 0.0 if no Profile exists yet
-    (rather than raising an error - a missing profile shouldn't crash
-    the extraction flow in views.py).
+    Convenience wrapper: takes a JobPosting instance and the user pasting it,
+    pulls that user's profile, and returns a match score. Returns 0.0 if
+    they don't have a Profile yet (rather than raising an error - a missing
+    profile shouldn't crash the extraction flow in views.py).
     """
-    profile = get_my_profile()
+    profile = get_profile_for(user)
     if profile is None:
         return 0.0
     return calculate_match_score(job.skills_required, profile.skills)

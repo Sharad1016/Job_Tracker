@@ -1,15 +1,20 @@
+from django.conf import settings
 from django.db import models
 
 
 class Profile(models.Model):
     """
-    Represents the person using this tracker (just you, for now).
-    Kept as its own model - separate from JobPosting - because your
-    skillset exists independently of any job. It doesn't belong to
-    a posting; the matching engine reads from both and compares them.
+    Represents one signed-up user of this tracker. Linked to Django's
+    built-in User model with OneToOneField, so each account gets its
+    own skills list - this only became necessary once real login/signup
+    existed; before that, a single unowned Profile row was fine.
     """
 
-    name = models.CharField(max_length=100, default="My Profile")
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="profile",
+    )
     skills = models.JSONField(
         default=list,
         blank=True,
@@ -18,7 +23,7 @@ class Profile(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return self.name
+        return f"{self.user.username}'s profile"
 
 
 class JobPosting(models.Model):

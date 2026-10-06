@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}AI Job Tracker{% endblock %}
+{% block content %}
+<div class="text-center py-5">
+    <h1 class="display-5 fw-bold">AI Job Tracker Agent</h1>
+    <p class="lead text-muted mt-3">
+        Paste any job description. AI extracts the title, company, skills, and salary automatically,
+        then scores how well it matches your profile — so you know at a glance which jobs are worth applying to.
+    </p>
+    <div class="mt-4">
+        <a href="{% url 'signup' %}" class="btn btn-primary btn-lg me-2">Get Started</a>
+        <a href="{% url 'login' %}" class="btn btn-outline-secondary btn-lg">Login</a>
+    </div>
+</div>
+{% endblock %}

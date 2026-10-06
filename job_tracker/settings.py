@@ -117,6 +117,11 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# --- Auth (Phase 4) ---
+LOGIN_URL = 'login'
+LOGIN_REDIRECT_URL = 'paste_job'
+LOGOUT_REDIRECT_URL = 'home'
+
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration

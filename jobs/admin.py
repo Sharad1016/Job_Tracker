@@ -4,7 +4,7 @@ from .models import JobPosting, Application, Profile
 
 @admin.register(Profile)
 class ProfileAdmin(admin.ModelAdmin):
-    list_display = ("name", "skills", "updated_at")
+    list_display = ("user", "skills", "updated_at")
 
 
 @admin.register(JobPosting)
