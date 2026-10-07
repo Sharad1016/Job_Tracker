@@ -1,43 +1,15 @@
-{% extends "base.html" %}
-{% block title %}Paste Job{% endblock %}
+{% extends "base_dashboard.html" %}
+{% block title %}Add Job{% endblock %}
 {% block content %}
-<h1 class="mb-4">Paste a Job Description</h1>
+<a href="{% url 'job_matches' %}" style="color:var(--text-soft); font-size:14px;">← Back to Job Matches</a>
+<h1 style="font-size:24px; margin:16px 0 4px;">Add a Job</h1>
+<p style="color:var(--text-soft); margin-bottom:24px;">Paste a full job description — AI will extract the details automatically.</p>
 
-{% if not profile_exists %}
-    <div class="alert alert-danger">
-        No skills set yet — every match score will show 0%. <a href="{% url 'profile_edit' %}">Set up your profile first</a>.
-    </div>
-{% endif %}
-
-<form method="post" class="mb-5">
-    {% csrf_token %}
-    {{ form.as_p }}
-    <button type="submit" class="btn btn-primary">Extract with AI</button>
-</form>
-
-<h2>Recently Added Jobs</h2>
-<table class="table table-bordered bg-white">
-    <thead>
-        <tr>
-            <th>Title</th>
-            <th>Company</th>
-            <th>Skills</th>
-            <th>Salary</th>
-            <th>Match Score</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for job in recent_jobs %}
-        <tr>
-            <td>{{ job.title|default:"(pending extraction)" }}</td>
-            <td>{{ job.company }}</td>
-            <td>{{ job.skills_required|join:", " }}</td>
-            <td>{{ job.salary_range }}</td>
-            <td>{{ job.match_score }}%</td>
-        </tr>
-        {% empty %}
-        <tr><td colspan="5">No jobs yet.</td></tr>
-        {% endfor %}
-    </tbody>
-</table>
+<div class="card" style="max-width:640px;">
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit" class="btn btn-primary" style="margin-top:8px;">Extract with AI</button>
+    </form>
+</div>
 {% endblock %}

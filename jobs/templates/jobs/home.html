@@ -1,15 +1,80 @@
 {% extends "base.html" %}
 {% block title %}AI Job Tracker{% endblock %}
 {% block content %}
-<div class="text-center py-5">
-    <h1 class="display-5 fw-bold">AI Job Tracker Agent</h1>
-    <p class="lead text-muted mt-3">
-        Paste any job description. AI extracts the title, company, skills, and salary automatically,
-        then scores how well it matches your profile — so you know at a glance which jobs are worth applying to.
-    </p>
-    <div class="mt-4">
-        <a href="{% url 'signup' %}" class="btn btn-primary btn-lg me-2">Get Started</a>
-        <a href="{% url 'login' %}" class="btn btn-outline-secondary btn-lg">Login</a>
+
+<div style="display:flex; align-items:center; gap:56px; padding: 40px 0 64px;">
+    <div style="flex:1; min-width:320px;">
+        <span class="badge badge-soft">🤖 AI Powered Job Search</span>
+        <h1 style="font-size:44px; font-weight:800; line-height:1.15; margin:20px 0;">
+            Smarter Job Search<br>with <span style="color:var(--primary);">AI</span>
+        </h1>
+        <p style="color:var(--text-soft); font-size:16px; max-width:460px; margin-bottom:28px;">
+            Paste any job description. AI extracts the details and scores it against your profile —
+            so you always know which jobs are actually worth your time.
+        </p>
+        <div style="display:flex; gap:12px;">
+            <a href="{% url 'signup' %}" class="btn btn-primary" style="padding:14px 28px;">Get Started</a>
+            <a href="#how-it-works" class="btn btn-outline" style="padding:14px 28px;">Learn More</a>
+        </div>
+    </div>
+    <div style="flex:1; min-width:280px;">
+        <div class="card" style="background:linear-gradient(160deg, var(--primary-light), #fff);">
+            <div style="display:flex; gap:8px; margin-bottom:16px;">
+                <span style="width:10px;height:10px;border-radius:50%;background:#F87171;display:inline-block;"></span>
+                <span style="width:10px;height:10px;border-radius:50%;background:#FBBF24;display:inline-block;"></span>
+                <span style="width:10px;height:10px;border-radius:50%;background:#34D399;display:inline-block;"></span>
+            </div>
+            <div style="background:#fff; border-radius:10px; padding:14px; box-shadow:var(--shadow); margin-bottom:10px;">
+                <div style="height:8px; width:60%; background:var(--primary-light); border-radius:4px;"></div>
+            </div>
+            <div style="background:#fff; border-radius:10px; padding:14px; box-shadow:var(--shadow); display:flex; justify-content:space-between; align-items:end;">
+                <div style="height:40px;width:14px;background:#FBBF24;border-radius:4px;"></div>
+                <div style="height:60px;width:14px;background:var(--primary);border-radius:4px;"></div>
+                <div style="height:30px;width:14px;background:#34D399;border-radius:4px;"></div>
+                <div style="height:50px;width:14px;background:var(--primary);border-radius:4px;"></div>
+            </div>
+        </div>
     </div>
 </div>
+
+<div class="card" style="display:flex; justify-content:space-around; text-align:center; flex-wrap:wrap; gap:24px;">
+    <div>
+        <div style="font-size:26px; font-weight:800; color:var(--primary);">{{ stats.jobs_tracked }}</div>
+        <div style="color:var(--text-soft); font-size:13px;">Jobs Tracked</div>
+    </div>
+    <div>
+        <div style="font-size:26px; font-weight:800; color:var(--primary);">{{ stats.active_users }}</div>
+        <div style="color:var(--text-soft); font-size:13px;">Active Users</div>
+    </div>
+    <div>
+        <div style="font-size:26px; font-weight:800; color:var(--primary);">{{ stats.avg_match }}%</div>
+        <div style="color:var(--text-soft); font-size:13px;">Avg Match Score</div>
+    </div>
+    <div>
+        <div style="font-size:26px; font-weight:800; color:var(--primary);">Instant</div>
+        <div style="color:var(--text-soft); font-size:13px;">AI Extraction</div>
+    </div>
+</div>
+
+<div id="how-it-works" style="padding:64px 0 24px;">
+    <h2 style="font-size:26px; font-weight:800; text-align:center; margin-bottom:36px;">How it works</h2>
+    <div style="display:flex; gap:20px; flex-wrap:wrap;">
+        <div class="card" style="flex:1; min-width:220px;">
+            <div class="badge badge-soft" style="margin-bottom:12px;">1</div>
+            <h3 style="font-size:16px;">Paste a job</h3>
+            <p style="color:var(--text-soft); font-size:14px;">Drop in any job description, from any site.</p>
+        </div>
+        <div class="card" style="flex:1; min-width:220px;">
+            <div class="badge badge-soft" style="margin-bottom:12px;">2</div>
+            <h3 style="font-size:16px;">AI extracts details</h3>
+            <p style="color:var(--text-soft); font-size:14px;">Title, company, skills, and requirements — pulled out automatically.</p>
+        </div>
+        <div class="card" style="flex:1; min-width:220px;">
+            <div class="badge badge-soft" style="margin-bottom:12px;">3</div>
+            <h3 style="font-size:16px;">Get your match score</h3>
+            <p style="color:var(--text-soft); font-size:14px;">See exactly how well it fits your skills, instantly.</p>
+        </div>
+    </div>
+</div>
+
 {% endblock %}

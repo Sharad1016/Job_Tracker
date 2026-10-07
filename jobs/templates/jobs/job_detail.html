@@ -1,0 +1,75 @@
+{% extends "base_dashboard.html" %}
+{% block title %}{{ job.title }}{% endblock %}
+{% block content %}
+
+<a href="{% url 'job_matches' %}" style="color:var(--text-soft); font-size:14px;">← Back to Job Matches</a>
+
+<div style="display:flex; gap:24px; margin-top:20px; align-items:flex-start; flex-wrap:wrap;">
+    <div style="flex:2; min-width:340px;">
+        <div class="card">
+            <div style="display:flex; gap:16px; align-items:center;">
+                <div style="width:56px; height:56px; border-radius:12px; background:{{ logo_color }}; color:white; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:20px;">
+                    {{ job.company|slice:":1"|default:"?" }}
+                </div>
+                <div>
+                    <h1 style="font-size:20px; margin:0;">{{ job.title|default:"Untitled" }}</h1>
+                    <p style="color:var(--text-soft); margin:4px 0 0;">
+                        {{ job.company|default:"Unknown company" }}{% if job.location %} · {{ job.location }}{% endif %} · added {{ job.created_at|timesince }} ago
+                    </p>
+                </div>
+            </div>
+
+            <h3 style="margin-top:28px; font-size:15px;">Job Description</h3>
+            <p style="color:var(--text-soft); font-size:14px; white-space:pre-wrap;">{{ job.raw_text }}</p>
+
+            {% if job.requirements %}
+            <h3 style="font-size:15px;">Requirements</h3>
+            <ul style="color:var(--text-soft); font-size:14px; padding-left:20px;">
+                {% for req in job.requirements %}
+                    <li>{{ req }}</li>
+                {% endfor %}
+            </ul>
+            {% endif %}
+
+            <div style="display:flex; gap:12px; margin-top:24px;">
+                {% if job.application_url %}
+                    <a href="{{ job.application_url }}" target="_blank" class="btn btn-primary">↗ Apply Now</a>
+                {% else %}
+                    <span class="btn btn-outline" style="cursor:default; color:var(--text-soft);">No apply link provided</span>
+                {% endif %}
+                <form method="post" action="{% url 'toggle_save' job.id %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="next" value="{% url 'job_detail' job.id %}">
+                    <button type="submit" class="btn btn-outline">{% if is_saved %}🔖 Saved{% else %}🔖 Save Job{% endif %}</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div style="flex:1; min-width:260px;">
+        <div class="card" style="text-align:center; margin-bottom:16px;">
+            <svg width="110" height="110" viewBox="0 0 100 100">
+                <circle cx="50" cy="50" r="42" fill="none" stroke="#EDEDF5" stroke-width="8"/>
+                <circle cx="50" cy="50" r="42" fill="none" stroke="#16A34A" stroke-width="8"
+                        stroke-dasharray="{{ ring_circumference }}" stroke-dashoffset="{{ ring_offset }}"
+                        stroke-linecap="round" transform="rotate(-90 50 50)"/>
+                <text x="50" y="55" text-anchor="middle" font-size="18" font-weight="700" fill="var(--text)">{{ job.match_score }}%</text>
+            </svg>
+            <p style="color:var(--text-soft); font-size:13px; margin:4px 0 0;">Overall Match</p>
+        </div>
+
+        <div class="card">
+            <h3 style="font-size:14px; margin-top:0;">Match Breakdown</h3>
+            <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:6px;">
+                <span>Skills</span><span>{{ job.match_score }}%</span>
+            </div>
+            <div style="height:6px; background:#EDEDF5; border-radius:3px; margin-bottom:16px;">
+                <div style="height:6px; width:{{ job.match_score }}%; background:#16A34A; border-radius:3px;"></div>
+            </div>
+            <p style="color:var(--text-soft); font-size:12px; margin-bottom:0;">
+                Experience, education, and location matching aren't built yet — this score is based on skills overlap only, for now.
+            </p>
+        </div>
+    </div>
+</div>
+{% endblock %}

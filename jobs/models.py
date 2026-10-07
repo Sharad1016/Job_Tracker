@@ -46,8 +46,17 @@ class JobPosting(models.Model):
         blank=True,
         help_text='List of skills, e.g. ["Python", "Flask", "SQL"]',
     )
+    requirements = models.JSONField(
+        default=list,
+        blank=True,
+        help_text='List of requirement bullet points, e.g. ["Bachelor\'s degree", "2+ years experience"]',
+    )
     salary_range = models.CharField(max_length=100, blank=True)
     deadline = models.DateField(null=True, blank=True)
+    application_url = models.URLField(
+        blank=True,
+        help_text="Optional link to apply. Left blank for pasted jobs unless you provide one.",
+    )
 
     # --- Fields the matching engine (Phase 3) will fill in ---
     match_score = models.FloatField(

@@ -1,0 +1,59 @@
+{% extends "base_dashboard.html" %}
+{% block title %}Job Matches{% endblock %}
+{% block content %}
+
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
+    <h1 style="font-size:24px; margin:0;">Job Matches</h1>
+    <a href="{% url 'paste_job' %}" class="btn btn-primary">+ Add Job</a>
+</div>
+
+{% if not profile_exists %}
+    <div class="alert alert-warning">
+        No skills set yet — every match score will show 0%.
+        <a href="{% url 'profile_edit' %}" style="font-weight:600;">Set up your profile</a>.
+    </div>
+{% endif %}
+
+<form method="get" style="display:flex; gap:12px; margin-bottom:24px;">
+    <input type="text" name="q" value="{{ query }}" placeholder="Search job title, company..." style="max-width:340px;">
+    <button type="submit" class="btn btn-outline">Search</button>
+    <span class="btn btn-outline" style="cursor:default; color:var(--text-soft); margin-left:auto;">Sort: Best Match</span>
+</form>
+
+{% for item in jobs_with_display %}
+<div class="card" style="display:flex; align-items:center; gap:18px; margin-bottom:14px;">
+    <div style="width:44px; height:44px; border-radius:10px; background:{{ item.logo_color }}; color:white; display:flex; align-items:center; justify-content:center; font-weight:700; flex-shrink:0;">
+        {{ item.job.company|slice:":1"|default:"?" }}
+    </div>
+    <div style="flex:1; min-width:0;">
+        <a href="{% url 'job_detail' item.job.id %}" style="font-weight:700; font-size:15px; color:var(--text);">{{ item.job.title|default:"Untitled" }}</a>
+        <div style="color:var(--text-soft); font-size:13px; margin:2px 0 8px;">
+            {{ item.job.company|default:"Unknown company" }}{% if item.job.location %} · {{ item.job.location }}{% endif %} · added {{ item.job.created_at|timesince }} ago
+        </div>
+        <div>
+            {% for skill in item.job.skills_required|slice:":4" %}
+                <span class="badge badge-soft" style="margin-right:6px;">{{ skill }}</span>
+            {% endfor %}
+            {% if item.job.skills_required|length > 4 %}
+                <span style="color:var(--text-soft); font-size:12px;">+{{ item.job.skills_required|length|add:"-4" }} more</span>
+            {% endif %}
+        </div>
+    </div>
+    <div style="text-align:right; flex-shrink:0;">
+        <div class="badge badge-success" style="margin-bottom:10px;">{{ item.job.match_score }}% Match</div><br>
+        <form method="post" action="{% url 'toggle_save' item.job.id %}">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{% url 'job_matches' %}">
+            <button type="submit" class="btn btn-outline" style="padding:6px 16px; font-size:13px;">
+                {% if item.is_saved %}Saved ✓{% else %}Save{% endif %}
+            </button>
+        </form>
+    </div>
+</div>
+{% empty %}
+<div class="card" style="text-align:center; color:var(--text-soft); padding:48px;">
+    No jobs yet. <a href="{% url 'paste_job' %}" style="color:var(--primary); font-weight:600;">Add your first job</a> to get started.
+</div>
+{% endfor %}
+
+{% endblock %}

@@ -35,6 +35,7 @@ Read the job description below and return ONLY a JSON object with these exact ke
 - company: company name (string, "" if not found)
 - location: job location (string, "" if not found)
 - skills_required: list of skill names mentioned, e.g. ["Python", "SQL"] (list of strings, [] if none found)
+- requirements: list of qualification/requirement bullet points as separate short strings, e.g. ["Bachelor's degree in CS", "2+ years experience"] ([] if none found)
 - salary_range: salary info as written, or "" if not mentioned
 - deadline: application deadline in YYYY-MM-DD format if mentioned, otherwise null
 
@@ -73,6 +74,7 @@ def extract_job_fields(raw_text: str) -> dict:
         "company": data.get("company") or "",
         "location": data.get("location") or "",
         "skills_required": data.get("skills_required") or [],
+        "requirements": data.get("requirements") or [],
         "salary_range": data.get("salary_range") or "",
         "deadline": data.get("deadline") or None,
     }
