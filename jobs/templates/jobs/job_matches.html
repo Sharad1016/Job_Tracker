@@ -40,7 +40,7 @@
         </div>
     </div>
     <div style="text-align:right; flex-shrink:0;">
-        <div class="badge badge-success" style="margin-bottom:10px;">{{ item.job.match_score }}% Match</div><br>
+        <div class="badge badge-success" style="margin-bottom:10px;">{{ item.live_score }}% Match</div><br>
         <form method="post" action="{% url 'toggle_save' item.job.id %}">
             {% csrf_token %}
             <input type="hidden" name="next" value="{% url 'job_matches' %}">

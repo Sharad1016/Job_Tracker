@@ -16,6 +16,13 @@
                     <p style="color:var(--text-soft); margin:4px 0 0;">
                         {{ job.company|default:"Unknown company" }}{% if job.location %} · {{ job.location }}{% endif %} · added {{ job.created_at|timesince }} ago
                     </p>
+                    {% if job.skills_required %}
+                    <div style="margin-top:8px;">
+                        {% for skill in job.skills_required %}
+                            <span class="badge badge-soft" style="margin-right:6px;">{{ skill }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
                 </div>
             </div>
 
@@ -53,7 +60,7 @@
                 <circle cx="50" cy="50" r="42" fill="none" stroke="#16A34A" stroke-width="8"
                         stroke-dasharray="{{ ring_circumference }}" stroke-dashoffset="{{ ring_offset }}"
                         stroke-linecap="round" transform="rotate(-90 50 50)"/>
-                <text x="50" y="55" text-anchor="middle" font-size="18" font-weight="700" fill="var(--text)">{{ job.match_score }}%</text>
+                <text x="50" y="55" text-anchor="middle" font-size="18" font-weight="700" fill="var(--text)">{{ live_score }}%</text>
             </svg>
             <p style="color:var(--text-soft); font-size:13px; margin:4px 0 0;">Overall Match</p>
         </div>
@@ -61,11 +68,30 @@
         <div class="card">
             <h3 style="font-size:14px; margin-top:0;">Match Breakdown</h3>
             <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:6px;">
-                <span>Skills</span><span>{{ job.match_score }}%</span>
+                <span>Skills</span><span>{{ live_score }}%</span>
             </div>
             <div style="height:6px; background:#EDEDF5; border-radius:3px; margin-bottom:16px;">
-                <div style="height:6px; width:{{ job.match_score }}%; background:#16A34A; border-radius:3px;"></div>
+                <div style="height:6px; width:{{ live_score }}%; background:#16A34A; border-radius:3px;"></div>
             </div>
+
+            {% if matched_skills %}
+            <p style="font-size:12px; font-weight:600; color:var(--success-text); margin-bottom:6px;">✓ Skills you have</p>
+            <div style="margin-bottom:14px;">
+                {% for skill in matched_skills %}
+                    <span class="badge badge-success" style="margin-right:6px; margin-bottom:6px; display:inline-block;">{{ skill }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+
+            {% if missing_skills %}
+            <p style="font-size:12px; font-weight:600; color:#DC2626; margin-bottom:6px;">✗ Skills you're missing</p>
+            <div style="margin-bottom:14px;">
+                {% for skill in missing_skills %}
+                    <span class="badge" style="background:#FEE2E2; color:#991B1B; margin-right:6px; margin-bottom:6px; display:inline-block;">{{ skill }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+
             <p style="color:var(--text-soft); font-size:12px; margin-bottom:0;">
                 Experience, education, and location matching aren't built yet — this score is based on skills overlap only, for now.
             </p>

@@ -5,10 +5,11 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.db.models import Avg, Q
 
-from .forms import PasteJobForm, SignupForm, ProfileForm
+from .forms import PasteJobForm, SignupForm, ProfileForm, ResumeUploadForm
 from .models import JobPosting, Profile, Application
 from .extraction import extract_job_fields
-from .matching import score_job, get_profile_for
+from .resume_parser import extract_text_from_file, extract_skills_from_resume
+from .matching import score_job, get_profile_for, match_breakdown
 
 # Palette for the letter-avatar circles on job cards. Picked once per
 # company via a hash, so the same company always gets the same color
@@ -80,8 +81,51 @@ def profile_edit(request):
     return render(
         request,
         "jobs/profile_form.html",
-        {"form": form, "profile": profile, "active_nav": "profile"},
+        {
+            "form": form,
+            "resume_form": ResumeUploadForm(),
+            "profile": profile,
+            "active_nav": "profile",
+        },
     )
+
+
+@login_required
+def upload_resume(request):
+    """
+    Parses an uploaded resume and MERGES extracted skills into the
+    existing profile - never overwrites. Case-insensitive dedup so
+    "python" from the resume doesn't duplicate "Python" already there.
+    """
+    if request.method != "POST":
+        return redirect("profile_edit")
+
+    form = ResumeUploadForm(request.POST, request.FILES)
+    if not form.is_valid():
+        messages.error(request, "Please choose a file to upload.")
+        return redirect("profile_edit")
+
+    profile, _ = Profile.objects.get_or_create(user=request.user)
+
+    try:
+        text = extract_text_from_file(request.FILES["resume_file"])
+        new_skills = extract_skills_from_resume(text)
+    except (ValueError, RuntimeError) as e:
+        messages.error(request, str(e))
+        return redirect("profile_edit")
+
+    existing_lower = {s.strip().lower() for s in profile.skills}
+    added = [s for s in new_skills if s.strip().lower() not in existing_lower]
+
+    profile.skills = profile.skills + added
+    profile.save()
+
+    if added:
+        messages.success(request, f"Added {len(added)} skill(s) from your resume: {', '.join(added)}")
+    else:
+        messages.warning(request, "No new skills found in that resume beyond what's already listed.")
+
+    return redirect("profile_edit")
 
 
 @login_required
@@ -140,15 +184,30 @@ def job_matches(request):
     # Which jobs the logged-in user has already saved, so the button
     # can show "Saved" instead of "Save" without a query per card.
     saved_job_ids = set(
-        Application.objects.filter(status="saved").values_list("job_id", flat=True)
+        Application.objects.filter(user=request.user, status="saved").values_list("job_id", flat=True)
     )
 
-    jobs_with_display = [
-        {"job": job, "logo_color": _logo_color(job.company), "is_saved": job.id in saved_job_ids}
-        for job in jobs
-    ]
-
+    # IMPORTANT: score live against THIS user's profile, not the stored
+    # job.match_score. JobPosting is shared across all accounts, but
+    # skills are per-user - the stored field only reflects whoever's
+    # profile was used at extraction/scrape time, which may not be you.
     profile = get_profile_for(request.user)
+    profile_skills = profile.skills if profile else []
+
+    jobs_with_display = []
+    for job in jobs:
+        breakdown = match_breakdown(job.skills_required, profile_skills)
+        jobs_with_display.append({
+            "job": job,
+            "logo_color": _logo_color(job.company),
+            "is_saved": job.id in saved_job_ids,
+            "live_score": breakdown["score"],
+        })
+
+    # Re-sort by the live score, not the stale stored one, so "Best
+    # Match" ordering is correct for whoever's actually looking.
+    jobs_with_display.sort(key=lambda x: x["live_score"], reverse=True)
+
     profile_exists = bool(profile and profile.skills)
 
     return render(
@@ -173,13 +232,18 @@ def job_detail(request, job_id):
     not faked here.
     """
     job = get_object_or_404(JobPosting, id=job_id)
-    is_saved = Application.objects.filter(job=job, status="saved").exists()
+    is_saved = Application.objects.filter(user=request.user, job=job, status="saved").exists()
+
+    profile = get_profile_for(request.user)
+    profile_skills = profile.skills if profile else []
+    breakdown = match_breakdown(job.skills_required, profile_skills)
+    live_score = breakdown["score"]
 
     # SVG circle math for the match-score ring: circumference = 2*pi*r,
     # and we reveal a fraction of it proportional to the score.
     radius = 42
     circumference = round(2 * 3.14159 * radius, 1)
-    ring_offset = round(circumference * (1 - job.match_score / 100), 1)
+    ring_offset = round(circumference * (1 - live_score / 100), 1)
 
     return render(
         request,
@@ -191,6 +255,9 @@ def job_detail(request, job_id):
             "active_nav": "matches",
             "ring_circumference": circumference,
             "ring_offset": ring_offset,
+            "live_score": live_score,
+            "matched_skills": breakdown["matched"],
+            "missing_skills": breakdown["missing"],
         },
     )
 
@@ -198,19 +265,17 @@ def job_detail(request, job_id):
 @login_required
 def toggle_save(request, job_id):
     """
-    Save/unsave a job. Creates or removes its Application(status='saved').
-    This is deliberately the ONLY Application-related feature built so
-    far - full status tracking (Applied/Interview/Offer) is Phase 7's
-    Kanban board, not built yet.
+    Save/unsave a job for THIS user specifically. Creates or removes
+    their (user, job) Application row.
     """
     if request.method == "POST":
         job = get_object_or_404(JobPosting, id=job_id)
-        existing = Application.objects.filter(job=job, status="saved").first()
+        existing = Application.objects.filter(user=request.user, job=job, status="saved").first()
         if existing:
             existing.delete()
             messages.success(request, f"Removed {job.title} from saved jobs.")
         else:
-            Application.objects.create(job=job, status="saved")
+            Application.objects.create(user=request.user, job=job, status="saved")
             messages.success(request, f"Saved {job.title}.")
 
     next_url = request.POST.get("next") or "job_matches"
@@ -219,8 +284,8 @@ def toggle_save(request, job_id):
 
 @login_required
 def saved_jobs(request):
-    """Lists every job currently saved (Application.status == 'saved')."""
-    applications = Application.objects.filter(status="saved").select_related("job")
+    """Lists jobs THIS user has saved."""
+    applications = Application.objects.filter(user=request.user, status="saved").select_related("job")
     jobs_with_display = [
         {"job": app.job, "logo_color": _logo_color(app.job.company)} for app in applications
     ]
@@ -229,3 +294,46 @@ def saved_jobs(request):
         "jobs/saved_jobs.html",
         {"jobs_with_display": jobs_with_display, "active_nav": "saved"},
     )
+
+
+@login_required
+def kanban_board(request):
+    """
+    Groups this user's Applications by status into Kanban columns.
+    Only shows applications that exist - a job you've never saved or
+    applied to doesn't appear here at all (that's what Job Matches is for).
+    """
+    applications = (
+        Application.objects.filter(user=request.user)
+        .select_related("job")
+        .order_by("-updated_at")
+    )
+
+    columns = {key: [] for key, _ in Application.STATUS_CHOICES}
+    for app in applications:
+        columns[app.status].append(app)
+
+    # STATUS_CHOICES already gives us (value, label) pairs in display order
+    ordered_columns = [
+        {"key": key, "label": label, "applications": columns[key]}
+        for key, label in Application.STATUS_CHOICES
+    ]
+
+    return render(
+        request,
+        "jobs/kanban.html",
+        {"columns": ordered_columns, "active_nav": "kanban"},
+    )
+
+
+@login_required
+def update_application_status(request, application_id):
+    """Moves an Application to a new status - the Kanban board's 'drag'."""
+    if request.method == "POST":
+        application = get_object_or_404(Application, id=application_id, user=request.user)
+        new_status = request.POST.get("status")
+        if new_status in dict(Application.STATUS_CHOICES):
+            application.status = new_status
+            application.save()
+            messages.success(request, f"Moved to {application.get_status_display()}.")
+    return redirect("kanban_board")

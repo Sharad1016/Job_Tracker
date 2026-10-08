@@ -4,6 +4,15 @@
 <h1 style="font-size:24px; margin-bottom:4px;">Your Profile</h1>
 <p style="color:var(--text-soft); margin-bottom:24px;">These skills are what every job gets matched against.</p>
 
+<div class="card" style="max-width:520px; margin-bottom:20px;">
+    <h3 style="font-size:15px; margin-top:0;">Upload Resume</h3>
+    <form method="post" action="{% url 'upload_resume' %}" enctype="multipart/form-data">
+        {% csrf_token %}
+        {{ resume_form.as_p }}
+        <button type="submit" class="btn btn-outline">Extract Skills from Resume</button>
+    </form>
+</div>
+
 <div class="card" style="max-width:520px;">
     <form method="post">
         {% csrf_token %}

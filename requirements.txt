@@ -4,3 +4,5 @@ python-dotenv
 playwright
 django-apscheduler
 requests
+pdfplumber
+python-docx

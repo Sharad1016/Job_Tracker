@@ -81,9 +81,13 @@ class JobPosting(models.Model):
 
 class Application(models.Model):
     """
-    One row = my application to a specific JobPosting.
-    Separate from JobPosting because a job can exist without me
-    having applied to it yet (e.g. a high-match job the agent flagged).
+    One row = ONE USER'S application to a specific JobPosting.
+
+    Changed from a plain OneToOneField(JobPosting) to a (user, job) pair -
+    JobPosting is shared across everyone (like match_score used to be),
+    but tracking status ("I applied", "I got an interview") is inherently
+    personal. Two different users need to be able to independently track
+    the SAME shared job without colliding.
     """
 
     STATUS_CHOICES = [
@@ -95,10 +99,15 @@ class Application(models.Model):
         ("rejected", "Rejected"),
     ]
 
-    job = models.OneToOneField(
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="applications",
+    )
+    job = models.ForeignKey(
         JobPosting,
         on_delete=models.CASCADE,
-        related_name="application",
+        related_name="applications",
     )
     status = models.CharField(
         max_length=20,
@@ -108,6 +117,12 @@ class Application(models.Model):
     applied_date = models.DateField(null=True, blank=True)
     notes = models.TextField(blank=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        # One user can only have ONE Application per job - re-saving
+        # or re-applying should update the existing row, not create
+        # a second one for the same (user, job) pair.
+        unique_together = [("user", "job")]
 
     def __str__(self):
         return f"{self.job} - {self.get_status_display()}"

@@ -36,3 +36,10 @@ class ProfileForm(forms.Form):
         """Converts the submitted comma-separated text into a clean list."""
         raw = self.cleaned_data.get("skills_text", "")
         return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+class ResumeUploadForm(forms.Form):
+    resume_file = forms.FileField(
+        label="Upload resume (PDF or DOCX)",
+        help_text="AI will pull out your skills and add them to the list below - review before saving.",
+    )

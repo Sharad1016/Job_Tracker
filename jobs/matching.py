@@ -16,6 +16,30 @@ def get_profile_for(user):
     return Profile.objects.filter(user=user).first()
 
 
+def match_breakdown(job_skills: list, profile_skills: list) -> dict:
+    """
+    Like calculate_match_score, but returns the actual evidence behind
+    the number: which skills matched, and which are missing. This is
+    what makes a match score verifiable instead of just a claim.
+    """
+    if not job_skills:
+        return {"score": 0.0, "matched": [], "missing": []}
+
+    # Keep the ORIGINAL casing for display (e.g. show "Python" not
+    # "python"), but compare using a normalized lowercase lookup.
+    profile_lookup = {s.strip().lower() for s in profile_skills}
+
+    matched, missing = [], []
+    for skill in job_skills:
+        if skill.strip().lower() in profile_lookup:
+            matched.append(skill)
+        else:
+            missing.append(skill)
+
+    score = round((len(matched) / len(job_skills)) * 100, 1)
+    return {"score": score, "matched": matched, "missing": missing}
+
+
 def calculate_match_score(job_skills: list, profile_skills: list) -> float:
     """
     Returns what percentage of the job's required skills you actually have.
