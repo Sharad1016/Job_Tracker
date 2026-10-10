@@ -95,8 +95,6 @@ class Application(models.Model):
         ("applied", "Applied"),
         ("oa", "Online Assessment"),
         ("interview", "Interview"),
-        ("offer", "Offer"),
-        ("rejected", "Rejected"),
     ]
 
     user = models.ForeignKey(

@@ -1,4 +1,5 @@
 from django.shortcuts import render, redirect, get_object_or_404
+from django.http import Http404
 from django.contrib import messages
 from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
@@ -267,13 +268,29 @@ def toggle_save(request, job_id):
     """
     Save/unsave a job for THIS user specifically. Creates or removes
     their (user, job) Application row.
+
+    NOTE: fixed a latent bug here while touching this code - the old
+    version only ever looked for an existing Application with
+    status="saved" before deciding whether to create one. If a job's
+    Application had already moved to "applied"/"oa"/"interview" (now
+    reachable directly from the nav instead of a separate Kanban page,
+    so users will hit this far more often), clicking "Save Job" again
+    would try to create a SECOND Application for the same (user, job)
+    pair and crash on the unique_together constraint. Now it checks
+    for ANY existing Application for this job first.
     """
     if request.method == "POST":
         job = get_object_or_404(JobPosting, id=job_id)
-        existing = Application.objects.filter(user=request.user, job=job, status="saved").first()
+        existing = Application.objects.filter(user=request.user, job=job).first()
         if existing:
-            existing.delete()
-            messages.success(request, f"Removed {job.title} from saved jobs.")
+            if existing.status == "saved":
+                existing.delete()
+                messages.success(request, f"Removed {job.title} from saved jobs.")
+            else:
+                messages.info(
+                    request,
+                    f"{job.title} is already being tracked as '{existing.get_status_display()}'.",
+                )
         else:
             Application.objects.create(user=request.user, job=job, status="saved")
             messages.success(request, f"Saved {job.title}.")
@@ -287,7 +304,8 @@ def saved_jobs(request):
     """Lists jobs THIS user has saved."""
     applications = Application.objects.filter(user=request.user, status="saved").select_related("job")
     jobs_with_display = [
-        {"job": app.job, "logo_color": _logo_color(app.job.company)} for app in applications
+        {"job": app.job, "logo_color": _logo_color(app.job.company), "application": app}
+        for app in applications
     ]
     return render(
         request,
@@ -296,39 +314,60 @@ def saved_jobs(request):
     )
 
 
+# Labels for the statuses that now live directly in the nav (replacing
+# the old Kanban board). "saved" isn't here since Saved Jobs already
+# has its own dedicated page/view above.
+NAV_STATUS_LABELS = {
+    "applied": "Applied",
+    "oa": "Online Assessment",
+    "interview": "Interview",
+}
+
+
 @login_required
-def kanban_board(request):
+def applications_by_status(request, status):
     """
-    Groups this user's Applications by status into Kanban columns.
-    Only shows applications that exist - a job you've never saved or
-    applied to doesn't appear here at all (that's what Job Matches is for).
+    Replaces the Kanban board: instead of one page with every status
+    as a column, each status (Applied / Online Assessment / Interview)
+    is now its own nav item and page, listing just this user's
+    Applications at that status. A status-change dropdown on each card
+    (same underlying update_application_status view the Kanban board
+    used) lets the user move a job to a different stage directly from
+    the list, without a separate board page.
     """
+    if status not in NAV_STATUS_LABELS:
+        raise Http404("Unknown application status.")
+
     applications = (
-        Application.objects.filter(user=request.user)
+        Application.objects.filter(user=request.user, status=status)
         .select_related("job")
         .order_by("-updated_at")
     )
-
-    columns = {key: [] for key, _ in Application.STATUS_CHOICES}
-    for app in applications:
-        columns[app.status].append(app)
-
-    # STATUS_CHOICES already gives us (value, label) pairs in display order
-    ordered_columns = [
-        {"key": key, "label": label, "applications": columns[key]}
-        for key, label in Application.STATUS_CHOICES
+    jobs_with_display = [
+        {"job": app.job, "logo_color": _logo_color(app.job.company), "application": app}
+        for app in applications
     ]
 
     return render(
         request,
-        "jobs/kanban.html",
-        {"columns": ordered_columns, "active_nav": "kanban"},
+        "jobs/status_list.html",
+        {
+            "jobs_with_display": jobs_with_display,
+            "status_label": NAV_STATUS_LABELS[status],
+            "active_nav": status,
+        },
     )
 
 
 @login_required
 def update_application_status(request, application_id):
-    """Moves an Application to a new status - the Kanban board's 'drag'."""
+    """
+    Moves an Application to a new status. Previously always redirected
+    back to the (now removed) Kanban board; now redirects back to
+    wherever the request came from (the Saved Jobs page, or one of the
+    Applied/Online Assessment/Interview pages), via the same `next`
+    hidden-field pattern used by toggle_save.
+    """
     if request.method == "POST":
         application = get_object_or_404(Application, id=application_id, user=request.user)
         new_status = request.POST.get("status")
@@ -336,4 +375,6 @@ def update_application_status(request, application_id):
             application.status = new_status
             application.save()
             messages.success(request, f"Moved to {application.get_status_display()}.")
-    return redirect("kanban_board")
+
+    next_url = request.POST.get("next") or "saved_jobs"
+    return redirect(next_url)

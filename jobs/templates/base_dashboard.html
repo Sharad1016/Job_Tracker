@@ -68,17 +68,12 @@
 
         <a href="{% url 'job_matches' %}" class="nav-item {% if active_nav == 'matches' %}active{% endif %}">🎯 Job Matches</a>
         <a href="{% url 'saved_jobs' %}" class="nav-item {% if active_nav == 'saved' %}active{% endif %}">🔖 Saved Jobs</a>
-        <a href="{% url 'kanban_board' %}" class="nav-item {% if active_nav == 'kanban' %}active{% endif %}">🗂️ Kanban Board</a>
-
-        <div class="nav-section-label">Coming soon</div>
-        <span class="nav-item disabled">📊 Dashboard <span class="soon-tag">Soon</span></span>
-        <span class="nav-item disabled">📋 Applications <span class="soon-tag">Soon</span></span>
-        <span class="nav-item disabled">📈 Analytics <span class="soon-tag">Soon</span></span>
-        <span class="nav-item disabled">📄 Reports <span class="soon-tag">Soon</span></span>
+        <a href="{% url 'applications_applied' %}" class="nav-item {% if active_nav == 'applied' %}active{% endif %}">📨 Applied</a>
+        <a href="{% url 'applications_oa' %}" class="nav-item {% if active_nav == 'oa' %}active{% endif %}">📝 Online Assessment</a>
+        <a href="{% url 'applications_interview' %}" class="nav-item {% if active_nav == 'interview' %}active{% endif %}">🎤 Interview</a>
 
         <div class="sidebar-footer">
             <a href="{% url 'profile_edit' %}" class="nav-item {% if active_nav == 'profile' %}active{% endif %}">👤 Profile</a>
-            <span class="nav-item disabled">⚙️ Settings <span class="soon-tag">Soon</span></span>
             <form method="post" action="{% url 'logout' %}">
                 {% csrf_token %}
                 <button type="submit" class="nav-item" style="border:none; background:none; width:100%; text-align:left; cursor:pointer; font-family:inherit;">🚪 Logout</button>

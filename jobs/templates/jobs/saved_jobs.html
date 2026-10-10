@@ -13,6 +13,7 @@
         <div style="color:var(--text-soft); font-size:13px;">{{ item.job.company }}{% if item.job.location %} · {{ item.job.location }}{% endif %}</div>
     </div>
     <div class="badge badge-success">{{ item.job.match_score }}% Match</div>
+    {% include "jobs/_status_select.html" with application=item.application %}
 </div>
 {% empty %}
 <div class="card" style="text-align:center; color:var(--text-soft); padding:48px;">

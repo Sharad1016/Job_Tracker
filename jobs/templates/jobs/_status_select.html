@@ -1,0 +1,15 @@
+{% comment %}
+Expects: `application` (an Application instance) in context.
+Sends the user back to the page they were on (request.path) after
+changing status, instead of the old hardcoded redirect to the Kanban
+board that no longer exists.
+{% endcomment %}
+<form method="post" action="{% url 'update_application_status' application.id %}">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="{{ request.path }}">
+    <select name="status" onchange="this.form.submit()" style="font-size:12px; padding:6px 8px; width:auto;">
+        {% for value, label in application.STATUS_CHOICES %}
+            <option value="{{ value }}" {% if value == application.status %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+    </select>
+</form>
