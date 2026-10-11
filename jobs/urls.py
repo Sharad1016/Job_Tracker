@@ -12,6 +12,7 @@ urlpatterns = [
     path("online-assessment/", views.applications_by_status, {"status": "oa"}, name="applications_oa"),
     path("interview/", views.applications_by_status, {"status": "interview"}, name="applications_interview"),
     path("applications/<int:application_id>/status/", views.update_application_status, name="update_application_status"),
+    path("scrape/", views.run_scraper, name="run_scraper"),
     path("signup/", views.signup_view, name="signup"),
     path("profile/", views.profile_edit, name="profile_edit"),
     path("profile/upload-resume/", views.upload_resume, name="upload_resume"),

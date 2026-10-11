@@ -10,6 +10,8 @@ import json
 from google import genai
 from dotenv import load_dotenv
 
+from .models import ROLE_CATEGORY_CHOICES
+
 load_dotenv()
 
 _client = None
@@ -28,6 +30,8 @@ def _get_client():
     return _client
 
 
+_ROLE_CATEGORY_KEYS = [key for key, _label in ROLE_CATEGORY_CHOICES]
+
 EXTRACTION_PROMPT = """You are extracting structured data from a job posting.
 Read the job description below and return ONLY a JSON object with these exact keys:
 
@@ -38,6 +42,8 @@ Read the job description below and return ONLY a JSON object with these exact ke
 - requirements: list of qualification/requirement bullet points as separate short strings, e.g. ["Bachelor's degree in CS", "2+ years experience"] ([] if none found)
 - salary_range: salary info as written, or "" if not mentioned
 - deadline: application deadline in YYYY-MM-DD format if mentioned, otherwise null
+- role_category: classify the ROLE into EXACTLY ONE of these categories (return the key, not the label): {role_categories}
+  Base this on what the job actually IS (e.g. a "Sales Engineer" role that happens to mention Python is "sales", not "software_engineering"). If genuinely unclear, use "other".
 
 Do not guess or invent information that isn't in the text. Leave fields empty/null if unsure.
 
@@ -57,7 +63,9 @@ def extract_job_fields(raw_text: str) -> dict:
 
     response = client.models.generate_content(
         model="gemini-flash-latest",
-        contents=EXTRACTION_PROMPT.format(text=raw_text),
+        contents=EXTRACTION_PROMPT.format(
+            text=raw_text, role_categories=", ".join(_ROLE_CATEGORY_KEYS)
+        ),
         config={
             "response_mime_type": "application/json",
         },
@@ -68,6 +76,14 @@ def extract_job_fields(raw_text: str) -> dict:
     except (json.JSONDecodeError, TypeError) as e:
         raise ValueError(f"Gemini did not return valid JSON: {e}")
 
+    role_category = data.get("role_category") or ""
+    if role_category not in _ROLE_CATEGORY_KEYS:
+        # Never trust the model to stay inside the enum - fall back to
+        # "other" rather than saving a category value that doesn't
+        # exist in ROLE_CATEGORY_CHOICES (which would break filtering
+        # and the Django admin's choice validation).
+        role_category = "other"
+
     # Defensive defaults - never trust external output blindly
     return {
         "title": data.get("title") or "",
@@ -77,4 +93,5 @@ def extract_job_fields(raw_text: str) -> dict:
         "requirements": data.get("requirements") or [],
         "salary_range": data.get("salary_range") or "",
         "deadline": data.get("deadline") or None,
+        "role_category": role_category,
     }

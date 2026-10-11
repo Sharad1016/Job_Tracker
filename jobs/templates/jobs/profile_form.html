@@ -17,6 +17,11 @@
     <form method="post">
         {% csrf_token %}
         {{ form.as_p }}
+        <p style="color:var(--text-soft); font-size:12px; margin-top:-8px;">
+            "Target role" is used as the literal search term when fetching jobs. "Target field" is used to
+            automatically discard scraped jobs outside that field (e.g. a Sales role won't show up if you're
+            targeting Software Engineering, even if it happens to mention Python).
+        </p>
         <button type="submit" class="btn btn-primary" style="margin-top:8px;">Save</button>
     </form>
 

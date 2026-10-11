@@ -73,11 +73,17 @@ def profile_edit(request):
         form = ProfileForm(request.POST)
         if form.is_valid():
             profile.skills = form.skills_as_list()
+            profile.target_role = form.cleaned_data["target_role"]
+            profile.target_role_category = form.cleaned_data["target_role_category"]
             profile.save()
             messages.success(request, "Profile updated.")
             return redirect("profile_edit")
     else:
-        form = ProfileForm(initial={"skills_text": ", ".join(profile.skills)})
+        form = ProfileForm(initial={
+            "skills_text": ", ".join(profile.skills),
+            "target_role": profile.target_role,
+            "target_role_category": profile.target_role_category,
+        })
 
     return render(
         request,
@@ -151,6 +157,7 @@ def paste_job(request):
                 job.requirements = extracted["requirements"]
                 job.salary_range = extracted["salary_range"]
                 job.deadline = extracted["deadline"]
+                job.role_category = extracted["role_category"]
                 job.match_score = score_job(job, request.user)
                 job.save()
                 messages.success(
@@ -218,6 +225,7 @@ def job_matches(request):
             "jobs_with_display": jobs_with_display,
             "query": query,
             "profile_exists": profile_exists,
+            "profile": profile,
             "active_nav": "matches",
         },
     )
@@ -378,3 +386,49 @@ def update_application_status(request, application_id):
 
     next_url = request.POST.get("next") or "saved_jobs"
     return redirect(next_url)
+
+
+@login_required
+def run_scraper(request):
+    """
+    The 'Fetch New Jobs' button - runs the exact same multi-site scrape
+    the CLI's scrape_jobs command does (via scraping_service.run_scrape),
+    so no terminal is needed for day-to-day use.
+
+    IMPORTANT KNOWN LIMITATION: this runs SYNCHRONOUSLY inside the
+    request/response cycle. Scraping 4 sites with Playwright + an AI
+    extraction call per new listing is genuinely slow (can be 30s-2min+
+    depending on how many new jobs are found), so the browser tab will
+    just sit on a loading spinner for that whole time - there's no
+    progress bar or background task queue (e.g. Celery) here. That's a
+    deliberate simplification appropriate for a personal/demo project,
+    the same way the scheduler itself runs in-process rather than as a
+    separate worker (see PROJECT_CONTEXT.md, Important Technical
+    Decisions) - NOT how this should be architected for real production
+    traffic with many concurrent users clicking the button at once.
+    """
+    if request.method == "POST":
+        from .scraping_service import run_scrape, SITE_SCRAPERS
+
+        site_param = request.POST.get("site", "all")
+        sites = None if site_param == "all" else [site_param]
+
+        summary = run_scrape(request.user, sites=sites, max_results_per_site=5)
+
+        if summary["added"]:
+            messages.success(
+                request,
+                f"Fetched {summary['added']} new job(s) matching '{summary['keyword']}' "
+                f"({', '.join(f'{s}: {c}' for s, c in summary['sites'].items())}).",
+            )
+        else:
+            messages.warning(
+                request,
+                f"No new matching jobs found for '{summary['keyword']}' this time "
+                f"(skipped {summary['skipped_duplicate']} duplicate(s), "
+                f"{summary['skipped_wrong_role']} off-role result(s)).",
+            )
+        for err in summary["errors"]:
+            messages.warning(request, f"Scraper issue: {err}")
+
+    return redirect("job_matches")

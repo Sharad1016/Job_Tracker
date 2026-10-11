@@ -1,6 +1,8 @@
 from django import forms
 from django.contrib.auth.forms import UserCreationForm
 
+from .models import ROLE_CATEGORY_CHOICES
+
 
 class PasteJobForm(forms.Form):
     raw_text = forms.CharField(
@@ -30,6 +32,16 @@ class ProfileForm(forms.Form):
         widget=forms.Textarea(attrs={"rows": 4, "placeholder": "Python, Django, Flask, SQL, Git"}),
         label="Your skills (comma-separated)",
         required=False,
+    )
+    target_role = forms.CharField(
+        max_length=150,
+        required=False,
+        label="Target role (used as the search term when fetching jobs)",
+        widget=forms.TextInput(attrs={"placeholder": "e.g. Backend Developer"}),
+    )
+    target_role_category = forms.ChoiceField(
+        choices=ROLE_CATEGORY_CHOICES,
+        label="Target field (jobs outside this field are filtered out automatically)",
     )
 
     def skills_as_list(self):

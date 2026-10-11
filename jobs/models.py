@@ -2,6 +2,27 @@ from django.conf import settings
 from django.db import models
 
 
+# Shared fixed category list, used by BOTH Profile.target_role_category
+# (what the user picks as their target) and JobPosting.role_category
+# (what the AI classifies each posting as). Keeping this as one shared
+# list of choices - rather than free text on either side - is what
+# makes automatic role filtering during scraping possible: two free-text
+# strings ("Software Engineer" vs "Backend Dev, SDE") can't be reliably
+# compared, but two values from the same fixed choice list can.
+ROLE_CATEGORY_CHOICES = [
+    ("software_engineering", "Software Engineering"),
+    ("data_analytics", "Data & Analytics"),
+    ("design", "Design"),
+    ("sales", "Sales"),
+    ("marketing", "Marketing"),
+    ("operations", "Operations"),
+    ("finance", "Finance"),
+    ("hr", "HR"),
+    ("customer_support", "Customer Support"),
+    ("other", "Other"),
+]
+
+
 class Profile(models.Model):
     """
     Represents one signed-up user of this tracker. Linked to Django's
@@ -19,6 +40,17 @@ class Profile(models.Model):
         default=list,
         blank=True,
         help_text='Your skills, e.g. ["Python", "Django", "Flask", "SQL"]',
+    )
+    target_role = models.CharField(
+        max_length=150,
+        blank=True,
+        help_text='The literal search term used when scraping, e.g. "Backend Developer".',
+    )
+    target_role_category = models.CharField(
+        max_length=30,
+        choices=ROLE_CATEGORY_CHOICES,
+        default="software_engineering",
+        help_text="Used to automatically filter out scraped jobs from unrelated fields (e.g. Sales, Marketing).",
     )
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -56,6 +88,12 @@ class JobPosting(models.Model):
     application_url = models.URLField(
         blank=True,
         help_text="Optional link to apply. Left blank for pasted jobs unless you provide one.",
+    )
+    role_category = models.CharField(
+        max_length=30,
+        choices=ROLE_CATEGORY_CHOICES,
+        blank=True,
+        help_text="AI-classified job category, used to filter scraped jobs to the user's target role.",
     )
 
     # --- Fields the matching engine (Phase 3) will fill in ---

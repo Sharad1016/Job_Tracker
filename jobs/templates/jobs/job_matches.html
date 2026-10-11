@@ -4,8 +4,28 @@
 
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
     <h1 style="font-size:24px; margin:0;">Job Matches</h1>
-    <a href="{% url 'paste_job' %}" class="btn btn-primary">+ Add Job</a>
+    <div style="display:flex; gap:10px;">
+        <form method="post" action="{% url 'run_scraper' %}" style="display:flex; gap:8px;">
+            {% csrf_token %}
+            <select name="site" style="width:auto; padding:10px 12px;">
+                <option value="all">All sites</option>
+                <option value="internshala">Internshala</option>
+                <option value="naukri">Naukri</option>
+                <option value="foundit">Foundit</option>
+                <option value="workindia">WorkIndia</option>
+            </select>
+            <button type="submit" class="btn btn-outline">🔄 Fetch New Jobs</button>
+        </form>
+        <a href="{% url 'paste_job' %}" class="btn btn-primary">+ Add Job</a>
+    </div>
 </div>
+
+{% if not profile.target_role %}
+    <div class="alert alert-warning">
+        No target role set — jobs will be fetched using a generic "software engineer" search.
+        <a href="{% url 'profile_edit' %}" style="font-weight:600;">Set your target role</a> for better results.
+    </div>
+{% endif %}
 
 {% if not profile_exists %}
     <div class="alert alert-warning">

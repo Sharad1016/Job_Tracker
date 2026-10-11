@@ -17,9 +17,15 @@ logger = logging.getLogger(__name__)
 def run_daily_scrape():
     """The actual task the scheduler fires. Wrapped in try/except so one
     bad run (e.g. a network hiccup) doesn't kill the scheduler itself -
-    it just tries again at the next scheduled time."""
+    it just tries again at the next scheduled time.
+
+    No longer passes a fixed --keyword: scrape_jobs now derives the
+    search term from each user's Profile.target_role automatically
+    (see scraping_service.py), and defaults to the first account/site='all'
+    the same way the CLI command does when no options are given.
+    """
     try:
-        call_command("scrape_jobs", keyword="python", max_results=15)
+        call_command("scrape_jobs", max_results=5)
     except Exception:
         logger.exception("Scheduled scrape_jobs run failed")
 
@@ -31,7 +37,7 @@ def start_scheduler():
     scheduler.add_job(
         run_daily_scrape,
         trigger=CronTrigger(hour=9, minute=0),  # runs once daily at 9:00 AM server time
-        id="daily_internshala_scrape",
+        id="daily_internshala_scrape",  # NOTE: stale name - this job now scrapes all 4 sites, not just Internshala. Left as-is to avoid creating a duplicate DjangoJobStore entry under a new id.
         max_instances=1,
         replace_existing=True,
     )
