@@ -12,6 +12,7 @@ import json
 import pdfplumber
 import docx
 from google import genai
+from google.genai import errors as genai_errors
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -87,15 +88,26 @@ Resume text:
 def extract_skills_from_resume(resume_text: str) -> list:
     """
     Sends resume text to Gemini and returns a list of skill strings.
-    Raises ValueError if the response isn't valid JSON.
+    Raises ValueError if the response isn't valid JSON. Raises
+    RuntimeError if the Gemini API call itself fails - e.g. the "503
+    UNAVAILABLE / model is currently experiencing high demand" error,
+    which previously wasn't caught anywhere and crashed straight to
+    Django's raw 500 error page instead of showing a friendly message
+    on the profile page.
     """
     client = _get_client()
 
-    response = client.models.generate_content(
-        model="gemini-flash-latest",
-        contents=SKILLS_EXTRACTION_PROMPT.format(text=resume_text),
-        config={"response_mime_type": "application/json"},
-    )
+    try:
+        response = client.models.generate_content(
+            model="gemini-flash-latest",
+            contents=SKILLS_EXTRACTION_PROMPT.format(text=resume_text),
+            config={"response_mime_type": "application/json"},
+        )
+    except genai_errors.APIError as e:
+        raise RuntimeError(
+            f"Gemini is temporarily unavailable ({e}). Please try uploading your resume again in a minute, "
+            f"or add your skills manually below in the meantime."
+        )
 
     try:
         data = json.loads(response.text)

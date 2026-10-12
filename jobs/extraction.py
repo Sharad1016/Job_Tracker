@@ -8,6 +8,7 @@ hand or pulled off a job board.
 import os
 import json
 from google import genai
+from google.genai import errors as genai_errors
 from dotenv import load_dotenv
 
 from .models import ROLE_CATEGORY_CHOICES
@@ -58,18 +59,30 @@ def extract_job_fields(raw_text: str) -> dict:
     """
     Sends raw_text to Gemini and returns a dict matching JobPosting's fields.
     Raises ValueError if Gemini's response can't be parsed as valid JSON.
+    Raises RuntimeError if the Gemini API call itself fails (rate limit,
+    503 "model overloaded", network error, etc.) - previously this
+    wasn't caught at all, so a transient Gemini outage would crash the
+    whole request with an unhandled 500 instead of a friendly message
+    (and, since this function is also called in a loop by the scraper,
+    it would have killed an entire multi-site scrape run over ONE
+    failed job instead of just skipping that job and continuing).
     """
     client = _get_client()
 
-    response = client.models.generate_content(
-        model="gemini-flash-latest",
-        contents=EXTRACTION_PROMPT.format(
-            text=raw_text, role_categories=", ".join(_ROLE_CATEGORY_KEYS)
-        ),
-        config={
-            "response_mime_type": "application/json",
-        },
-    )
+    try:
+        response = client.models.generate_content(
+            model="gemini-flash-latest",
+            contents=EXTRACTION_PROMPT.format(
+                text=raw_text, role_categories=", ".join(_ROLE_CATEGORY_KEYS)
+            ),
+            config={
+                "response_mime_type": "application/json",
+            },
+        )
+    except genai_errors.APIError as e:
+        # Covers both ServerError (5xx, e.g. "model overloaded") and
+        # ClientError (4xx, e.g. bad/expired API key, rate limit).
+        raise RuntimeError(f"Gemini API request failed: {e}")
 
     try:
         data = json.loads(response.text)
