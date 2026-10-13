@@ -4,14 +4,9 @@ across all four supported sites, using the SAME extract_job_fields()
 pipeline every other job-add path uses, then filters out anything
 whose AI-classified role_category doesn't match the user's declared
 target_role_category.
-
-This function is deliberately the ONE place that knows how to run a
-full scrape - both the CLI (`manage.py scrape_jobs`) and the web
-button (views.run_scraper, so scraping no longer requires opening a
-terminal) call this same function, instead of duplicating the loop.
-Matches the project's existing "one shared pipeline" pattern
-(extract_job_fields being reused by both paste and scrape).
 """
+
+import logging
 
 from .models import JobPosting
 from .extraction import extract_job_fields
@@ -31,18 +26,19 @@ SITE_SCRAPERS = {
     "workindia": scrape_workindia,
 }
 
+logger = logging.getLogger(__name__)
+
+
+def _site_label(site: str) -> str:
+    return (site or "unknown").title()
+
 
 def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
     """
-    Scrapes the given sites (defaults to all four) using user's
+    Scrapes the given sites (defaults to all four) using the user's
     Profile.target_role as the search keyword, extracts + scores each
-    new listing, and DISCARDS any job whose AI-classified role_category
-    doesn't match the user's Profile.target_role_category - e.g. a
-    Software Engineering search shouldn't leave Sales/Marketing rows
-    sitting in Job Matches just because a keyword happened to overlap.
-
-    Returns a summary dict so callers (CLI command or the web view) can
-    report exactly what happened without duplicating this loop.
+    new listing, and discards any job whose AI-classified role_category
+    doesn't match the user's target role category.
     """
     profile = getattr(user, "profile", None)
     keyword = (profile.target_role if profile and profile.target_role else "software engineer")
@@ -53,7 +49,7 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
     summary = {
         "keyword": keyword,
         "target_category": target_category,
-        "sites": {},
+        "sites": {site: 0 for site in SITE_SCRAPERS.keys()},
         "added": 0,
         "skipped_duplicate": 0,
         "skipped_wrong_role": 0,
@@ -70,46 +66,81 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
         site_added = 0
         try:
             scraped = scraper_fn(keyword=keyword, max_results=max_results_per_site)
+            scraped = scraped or []
+            if not isinstance(scraped, list):
+                raise TypeError(f"Scraper returned {type(scraped).__name__}, expected list")
         except Exception as e:
-            # A single site failing (selector timeout, site down, anti-bot
-            # block, etc.) shouldn't kill the whole multi-site run - the
-            # other sites should still get a chance to contribute jobs.
-            summary["errors"].append(f"{site}: {e}")
+            summary["errors"].append(f"[{_site_label(site)}] FAILED: {e}")
+            logger.exception("[%s] FAILED: %s", _site_label(site), e)
             summary["sites"][site] = 0
             continue
 
+        print(f"[{_site_label(site)}] Found {len(scraped)} jobs")
         for item in scraped:
+            if not isinstance(item, dict):
+                summary["errors"].append(f"[{_site_label(site)}] Invalid job payload: {item!r}")
+                continue
+
+            title = (item.get("title") or "").strip()
+            company = (item.get("company") or "").strip()
+            raw_text = (item.get("raw_text") or "").strip()
+
+            if not raw_text:
+                summary["errors"].append(f"[{_site_label(site)}] Empty raw_text for '{title or 'unknown'}'")
+                continue
+
+            if not title or not company:
+                summary["errors"].append(f"[{_site_label(site)}] Missing title/company: {title!r} / {company!r}")
+                continue
+
             already_exists = JobPosting.objects.filter(
-                title__iexact=item["title"], company__iexact=item["company"]
+                title__iexact=title, company__iexact=company
             ).exists()
             if already_exists:
                 summary["skipped_duplicate"] += 1
                 continue
 
-            job = JobPosting.objects.create(raw_text=item["raw_text"], source=site)
-
             try:
-                extracted = extract_job_fields(item["raw_text"])
+                extracted = extract_job_fields(raw_text)
             except (ValueError, RuntimeError) as e:
                 summary["failed_extraction"] += 1
-                summary["errors"].append(f"{site}/'{item['title']}': extraction failed: {e}")
-                continue  # raw_text row stays saved (save-first pattern), just unpopulated
+                summary["errors"].append(f"[{_site_label(site)}] Extraction failed for '{title}': {e}")
+                logger.exception("[%s] Extraction failed for %s", _site_label(site), title)
+                continue
 
-            # Role filtering: only keep the job if its AI-classified
-            # category matches what the user is actually looking for.
-            if extracted["role_category"] != target_category:
-                job.delete()  # noise from an unrelated field - don't keep it
+            fallback_used = bool(extracted.pop("_fallback_used", False))
+            extraction_error = extracted.pop("_extraction_error", None)
+            if fallback_used:
+                summary["failed_extraction"] += 1
+                if extraction_error:
+                    summary["errors"].append(f"[{_site_label(site)}] Fallback extraction used for '{title}': {extraction_error}")
+
+            title_value = (extracted.get("title") or "").strip()
+            company_value = (extracted.get("company") or "").strip()
+            if not title_value or not company_value:
+                summary["failed_extraction"] += 1
+                summary["errors"].append(
+                    f"[{_site_label(site)}] Missing title/company after extraction: '{title_value}' / '{company_value}'"
+                )
+                continue
+
+            role_category = extracted.get("role_category") or "other"
+            if role_category != target_category:
                 summary["skipped_wrong_role"] += 1
                 continue
 
-            job.title = extracted["title"]
-            job.company = extracted["company"]
-            job.location = extracted["location"]
-            job.skills_required = extracted["skills_required"]
-            job.requirements = extracted["requirements"]
-            job.salary_range = extracted["salary_range"]
-            job.deadline = extracted["deadline"]
-            job.role_category = extracted["role_category"]
+            job = JobPosting.objects.create(
+                raw_text=raw_text,
+                source=site,
+                title=title_value,
+                company=company_value,
+                location=(extracted.get("location") or "").strip(),
+                skills_required=extracted.get("skills_required") or [],
+                requirements=extracted.get("requirements") or [],
+                salary_range=(extracted.get("salary_range") or "").strip(),
+                deadline=extracted.get("deadline") or None,
+                role_category=role_category,
+            )
             job.match_score = score_job(job, user)
             job.save()
 
@@ -117,8 +148,9 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
             site_added += 1
 
             if job.match_score >= MATCH_ALERT_THRESHOLD:
-                send_telegram_alert(job)  # best-effort, never raises
+                send_telegram_alert(job)
 
         summary["sites"][site] = site_added
 
+    print(summary)
     return summary

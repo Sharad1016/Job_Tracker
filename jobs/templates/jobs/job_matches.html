@@ -50,6 +50,9 @@
         <div style="color:var(--text-soft); font-size:13px; margin:2px 0 8px;">
             {{ item.job.company|default:"Unknown company" }}{% if item.job.location %} · {{ item.job.location }}{% endif %} · added {{ item.job.created_at|timesince }} ago
         </div>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+            <span class="badge badge-soft">From: {{ item.job.source|default:"manual"|title }}</span>
+        </div>
         <div>
             {% for skill in item.job.skills_required|slice:":4" %}
                 <span class="badge badge-soft" style="margin-right:6px;">{{ skill }}</span>

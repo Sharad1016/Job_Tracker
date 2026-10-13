@@ -7,6 +7,7 @@ hand or pulled off a job board.
 
 import os
 import json
+import re
 from google import genai
 from google.genai import errors as genai_errors
 from dotenv import load_dotenv
@@ -55,21 +56,106 @@ Job description:
 """
 
 
+def _clean_text(value):
+    if value is None:
+        return ""
+    return " ".join(str(value).split())
+
+
+def _extract_line_value(raw_text: str, prefixes: list[str]) -> str:
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lowered = stripped.lower()
+        for prefix in prefixes:
+            prefix_lower = prefix.lower()
+            if lowered.startswith(f"{prefix_lower}:"):
+                return _clean_text(stripped.split(":", 1)[1])
+            if lowered.startswith(f"{prefix_lower} -"):
+                return _clean_text(stripped.split("-", 1)[1])
+    return ""
+
+
+def _extract_skills(raw_text: str) -> list[str]:
+    lines = raw_text.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        lowered = stripped.lower()
+        if lowered.startswith(("skills:", "skill:", "tech stack:", "technologies:", "required skills:")):
+            remainder = stripped.split(":", 1)[1].strip() if ":" in stripped else stripped.strip()
+            values = []
+            if remainder:
+                values.extend(re.split(r"[,|\n•]+", remainder))
+
+            for next_line in lines[index + 1:]:
+                next_stripped = next_line.strip()
+                if not next_stripped:
+                    continue
+                lower_next = next_stripped.lower()
+                if lower_next.endswith((":", ":")) or lower_next.startswith(("about the job", "responsibilities", "requirements")):
+                    break
+                values.extend(re.split(r"[,|\n•]+", next_stripped))
+                if len(values) >= 20:
+                    break
+            skills = [p.strip() for p in values if p.strip()]
+            return skills[:20]
+    return []
+
+
+def _fallback_job_fields(raw_text: str) -> dict:
+    text = raw_text or ""
+    title = _extract_line_value(text, [
+        "Role", "Title", "Job Title", "Position", "Hiring for"
+    ])
+    company = _extract_line_value(text, [
+        "Company", "Organization", "Employer", "Hiring company"
+    ])
+    location = _extract_line_value(text, [
+        "Location", "Work Location", "Office Location", "City"
+    ])
+    salary = _extract_line_value(text, [
+        "Salary", "Stipend", "Compensation", "Pay"
+    ])
+    requirements = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lowered = stripped.lower()
+        if lowered.startswith(("requirements:", "responsibilities:", "must have:", "qualifications:", "eligibility:")):
+            value = stripped.split(":", 1)[1].strip() if ":" in stripped else stripped.strip()
+            if value:
+                requirements.append(value)
+        elif stripped.startswith(("- ", "* ", "• ")) and not lowered.startswith(("skills:", "company:", "role:", "location:", "salary:", "stipend:")):
+            requirements.append(stripped[2:].strip())
+
+    skills_required = _extract_skills(text)
+    if not title:
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        title = first_line.replace("Role:", "").strip() if first_line.lower().startswith("role:") else title
+
+    return {
+        "title": title,
+        "company": company,
+        "location": location,
+        "skills_required": skills_required,
+        "requirements": requirements[:10],
+        "salary_range": salary,
+        "deadline": None,
+        "role_category": "other",
+    }
+
+
 def extract_job_fields(raw_text: str) -> dict:
     """
     Sends raw_text to Gemini and returns a dict matching JobPosting's fields.
-    Raises ValueError if Gemini's response can't be parsed as valid JSON.
-    Raises RuntimeError if the Gemini API call itself fails (rate limit,
-    503 "model overloaded", network error, etc.) - previously this
-    wasn't caught at all, so a transient Gemini outage would crash the
-    whole request with an unhandled 500 instead of a friendly message
-    (and, since this function is also called in a loop by the scraper,
-    it would have killed an entire multi-site scrape run over ONE
-    failed job instead of just skipping that job and continuing).
+    If the AI response is unavailable or malformed, falls back to deterministic
+    parsing of the raw_text so the job still keeps valid title/company data
+    instead of silently becoming Untitled/Unknown company.
     """
-    client = _get_client()
-
     try:
+        client = _get_client()
         response = client.models.generate_content(
             model="gemini-flash-latest",
             contents=EXTRACTION_PROMPT.format(
@@ -80,31 +166,43 @@ def extract_job_fields(raw_text: str) -> dict:
             },
         )
     except genai_errors.APIError as e:
-        # Covers both ServerError (5xx, e.g. "model overloaded") and
-        # ClientError (4xx, e.g. bad/expired API key, rate limit).
-        raise RuntimeError(f"Gemini API request failed: {e}")
+        fallback = _fallback_job_fields(raw_text)
+        fallback["_fallback_used"] = True
+        fallback["_extraction_error"] = f"Gemini API request failed: {e}"
+        return fallback
+    except Exception as e:
+        fallback = _fallback_job_fields(raw_text)
+        fallback["_fallback_used"] = True
+        fallback["_extraction_error"] = f"Gemini extraction failed: {e}"
+        return fallback
 
     try:
         data = json.loads(response.text)
     except (json.JSONDecodeError, TypeError) as e:
-        raise ValueError(f"Gemini did not return valid JSON: {e}")
+        fallback = _fallback_job_fields(raw_text)
+        fallback["_fallback_used"] = True
+        fallback["_extraction_error"] = f"Gemini did not return valid JSON: {e}"
+        return fallback
 
     role_category = data.get("role_category") or ""
     if role_category not in _ROLE_CATEGORY_KEYS:
-        # Never trust the model to stay inside the enum - fall back to
-        # "other" rather than saving a category value that doesn't
-        # exist in ROLE_CATEGORY_CHOICES (which would break filtering
-        # and the Django admin's choice validation).
         role_category = "other"
 
-    # Defensive defaults - never trust external output blindly
-    return {
-        "title": data.get("title") or "",
-        "company": data.get("company") or "",
-        "location": data.get("location") or "",
+    cleaned = {
+        "title": _clean_text(data.get("title") or ""),
+        "company": _clean_text(data.get("company") or ""),
+        "location": _clean_text(data.get("location") or ""),
         "skills_required": data.get("skills_required") or [],
         "requirements": data.get("requirements") or [],
-        "salary_range": data.get("salary_range") or "",
+        "salary_range": _clean_text(data.get("salary_range") or ""),
         "deadline": data.get("deadline") or None,
         "role_category": role_category,
     }
+
+    if not cleaned["title"] and not cleaned["company"] and not cleaned["location"]:
+        fallback = _fallback_job_fields(raw_text)
+        fallback["_fallback_used"] = True
+        fallback["_extraction_error"] = "Gemini returned empty required fields."
+        return fallback
+
+    return cleaned

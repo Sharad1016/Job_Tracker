@@ -24,7 +24,7 @@
                     </div>
                     {% endif %}
                     {% if job.get_role_category_display %}
-                        <div style="margin-top:6px; color:var(--text-soft); font-size:12px;">Field: {{ job.get_role_category_display }} · Source: {{ job.source }}</div>
+                        <div style="margin-top:6px; color:var(--text-soft); font-size:12px;">Field: {{ job.get_role_category_display }} · Source: {{ job.source|default:"manual"|title }}</div>
                     {% endif %}
                 </div>
             </div>
