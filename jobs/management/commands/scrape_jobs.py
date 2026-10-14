@@ -7,8 +7,8 @@ from jobs.scraping_service import run_scrape, SITE_SCRAPERS
 class Command(BaseCommand):
     help = (
         "Scrapes one or all of Internshala/Naukri/Foundit/WorkIndia, adds new "
-        "postings (skipping duplicates and jobs outside the user's target "
-        "role), extracts structured fields with AI, and scores them."
+        "postings (skipping duplicates), and extracts structured fields. "
+        "All jobs are saved; users filter by role in the dashboard."
     )
 
     def add_arguments(self, parser):
@@ -46,7 +46,7 @@ class Command(BaseCommand):
         self.stdout.write(f"Scraping {options['site']} for user '{user.username}'...")
         summary = run_scrape(user, sites=sites, max_results_per_site=options["max_results"])
 
-        self.stdout.write(f"Searched as: '{summary['keyword']}' (category: {summary['target_category']})")
+        self.stdout.write(f"Searched as: '{summary['keyword']}'")
         for site, count in summary["sites"].items():
             self.stdout.write(f"  {site}: {count} added")
 
@@ -56,7 +56,6 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 f"Done. Added {summary['added']}, skipped {summary['skipped_duplicate']} "
-                f"duplicate(s), {summary['skipped_wrong_role']} off-role, "
-                f"{summary['failed_extraction']} extraction failure(s)."
+                f"duplicate(s), {summary['failed_extraction']} extraction failure(s)."
             )
         )

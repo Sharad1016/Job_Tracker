@@ -1,9 +1,9 @@
 """
-Phase 11 (multi-site + role-filtered scraping): orchestrates scraping
-across all four supported sites, using the SAME extract_job_fields()
-pipeline every other job-add path uses, then filters out anything
-whose AI-classified role_category doesn't match the user's declared
-target_role_category.
+Multi-site job scraping without AI-dependent filtering.
+
+Scrapes jobs from all four supported sites using the user's target_role
+as the search keyword, extracts structured fields deterministically,
+and saves all jobs to the database (users filter by role in the dashboard).
 """
 
 import logging
@@ -36,26 +36,25 @@ def _site_label(site: str) -> str:
 def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
     """
     Scrapes the given sites (defaults to all four) using the user's
-    Profile.target_role as the search keyword, extracts + scores each
-    new listing, and discards any job whose AI-classified role_category
-    doesn't match the user's target role category.
+    Profile.target_role as the search keyword.
+    
+    All jobs with extractable title/company are saved (no role filtering).
+    Users can filter by role category in the dashboard.
     """
     profile = getattr(user, "profile", None)
     keyword = (profile.target_role if profile and profile.target_role else "software engineer")
-    target_category = profile.target_role_category if profile else "software_engineering"
 
     sites = sites or list(SITE_SCRAPERS.keys())
 
     summary = {
         "keyword": keyword,
-        "target_category": target_category,
         "sites": {site: 0 for site in SITE_SCRAPERS.keys()},
         "added": 0,
         "skipped_duplicate": 0,
-        "skipped_wrong_role": 0,
         "failed_extraction": 0,
         "errors": [],
     }
+
 
     for site in sites:
         scraper_fn = SITE_SCRAPERS.get(site)
@@ -108,13 +107,6 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
                 logger.exception("[%s] Extraction failed for %s", _site_label(site), title)
                 continue
 
-            fallback_used = bool(extracted.pop("_fallback_used", False))
-            extraction_error = extracted.pop("_extraction_error", None)
-            if fallback_used:
-                summary["failed_extraction"] += 1
-                if extraction_error:
-                    summary["errors"].append(f"[{_site_label(site)}] Fallback extraction used for '{title}': {extraction_error}")
-
             title_value = (extracted.get("title") or "").strip()
             company_value = (extracted.get("company") or "").strip()
             if not title_value or not company_value:
@@ -124,11 +116,7 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
                 )
                 continue
 
-            role_category = extracted.get("role_category") or "other"
-            if role_category != target_category:
-                summary["skipped_wrong_role"] += 1
-                continue
-
+            # Extract job - all jobs are saved (no role filtering)
             job = JobPosting.objects.create(
                 raw_text=raw_text,
                 source=site,
@@ -139,7 +127,7 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
                 requirements=extracted.get("requirements") or [],
                 salary_range=(extracted.get("salary_range") or "").strip(),
                 deadline=extracted.get("deadline") or None,
-                role_category=role_category,
+                role_category=extracted.get("role_category") or "other",
             )
             job.match_score = score_job(job, user)
             job.save()
