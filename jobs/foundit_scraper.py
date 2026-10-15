@@ -2,6 +2,8 @@
 
 from playwright.sync_api import sync_playwright
 
+from .jsonld_extraction import extract_json_ld_jobpostings
+
 FOUNDIT_SEARCH_URL = "https://www.foundit.in/srp/results?query={keyword}"
 
 
@@ -30,8 +32,22 @@ def scrape_foundit(keyword: str = "software engineer", max_results: int = 10) ->
                 "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
             ),
         )
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(2500)
+
+        # --- TEMPORARY DIAGNOSTIC LOGGING (read-only, no selector/logic changes) ---
+        print(f"[Foundit][DIAG] Requested URL: {url}")
+        print(f"[Foundit][DIAG] Final URL after redirects: {page.url}")
+        print(f"[Foundit][DIAG] HTTP status: {response.status if response else 'unknown'}")
+        print(f"[Foundit][DIAG] Page title: {page.title()!r}")
+        _page_html = page.content()
+        _anti_bot_hits = [kw for kw in ["captcha", "verify you are human", "access denied", "are you a robot", "unusual traffic", "just a moment", "blocked", "enable javascript"] if kw in _page_html.lower()]
+        print(f"[Foundit][DIAG] Anti-bot/JS-wall indicators found: {_anti_bot_hits or 'none'}")
+        print(f"[Foundit][DIAG] Page HTML length: {len(_page_html)} chars")
+        # --- END TEMPORARY DIAGNOSTIC LOGGING (selector-count diagnostics below, after `selectors` is defined) ---
+
+        # Phase 12: capture Schema.org JobPosting JSON-LD if present (often empty on listing pages - see jsonld_extraction.py)
+        json_ld_postings = extract_json_ld_jobpostings(page.content())
 
         selectors = [
             ".srpResultCardContainer",
@@ -41,6 +57,8 @@ def scrape_foundit(keyword: str = "software engineer", max_results: int = 10) ->
             ".srpResultCard",
             ".job-card",
         ]
+        for _sel in selectors:
+            print(f"[Foundit][DIAG] Selector '{_sel}' matches: {page.locator(_sel).count()}")
         found = any(page.locator(selector).count() for selector in selectors)
         if not found:
             browser.close()
@@ -62,7 +80,7 @@ def scrape_foundit(keyword: str = "software engineer", max_results: int = 10) ->
             if skills:
                 raw_text_parts.append(skills)
 
-            results.append({"title": title, "company": company, "raw_text": "\n".join(raw_text_parts)})
+            results.append({"title": title, "company": company, "raw_text": "\n".join(raw_text_parts), "json_ld": json_ld_postings})
 
         browser.close()
 

@@ -2,6 +2,8 @@
 
 from playwright.sync_api import sync_playwright
 
+from .jsonld_extraction import extract_json_ld_jobpostings
+
 INTERNSHALA_SEARCH_URL = "https://internshala.com/jobs/{keyword}-jobs"
 
 
@@ -18,6 +20,11 @@ def scrape_internshala(keyword: str = "python", max_results: int = 10) -> list[d
         page = browser.new_page(viewport={"width": 1440, "height": 2200})
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(2000)
+
+        # Phase 12: capture any Schema.org JobPosting JSON-LD present on
+        # the page once, before scraping cards - see jsonld_extraction.py
+        # for why this often legitimately finds nothing on listing pages.
+        json_ld_postings = extract_json_ld_jobpostings(page.content())
 
         card_selector = ".individual_internship, .internship-card, article, [data-job-id]"
         cards = page.locator(card_selector).all()[:max_results]
@@ -76,6 +83,7 @@ def scrape_internshala(keyword: str = "python", max_results: int = 10) -> list[d
                 "title": title,
                 "company": company,
                 "raw_text": "\n".join(raw_text_parts),
+                "json_ld": json_ld_postings,
             })
 
         browser.close()

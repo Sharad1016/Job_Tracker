@@ -180,18 +180,14 @@ def paste_job(request):
 def job_matches(request):
     """
     The main browsing page - card list of every job, sorted by match
-    score by default, with a simple title/company search and optional
-    role category filter. This is the page the mockup calls "Job Matches".
+    score by default, with a simple title/company search. This is
+    the page the mockup calls "Job Matches".
     """
     jobs = JobPosting.objects.all()  # uses Meta.ordering: -match_score, -created_at
 
     query = request.GET.get("q", "").strip()
     if query:
         jobs = jobs.filter(Q(title__icontains=query) | Q(company__icontains=query))
-
-    role_filter = request.GET.get("role_category", "").strip()
-    if role_filter:
-        jobs = jobs.filter(role_category=role_filter)
 
     # Which jobs the logged-in user has already saved, so the button
     # can show "Saved" instead of "Save" without a query per card.
@@ -222,16 +218,12 @@ def job_matches(request):
 
     profile_exists = bool(profile and profile.skills)
 
-    from .models import ROLE_CATEGORY_CHOICES
-
     return render(
         request,
         "jobs/job_matches.html",
         {
             "jobs_with_display": jobs_with_display,
             "query": query,
-            "role_filter": role_filter,
-            "role_categories": ROLE_CATEGORY_CHOICES,
             "profile_exists": profile_exists,
             "profile": profile,
             "active_nav": "matches",
@@ -433,7 +425,8 @@ def run_scraper(request):
             messages.warning(
                 request,
                 f"No new matching jobs found for '{summary['keyword']}' this time "
-                f"(skipped {summary['skipped_duplicate']} duplicate(s)).",
+                f"(skipped {summary['skipped_duplicate']} duplicate(s), "
+                f"{summary['skipped_wrong_role']} off-role result(s)).",
             )
         for err in summary["errors"]:
             messages.warning(request, f"Scraper issue: {err}")

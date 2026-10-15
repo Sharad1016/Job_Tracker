@@ -1,21 +1,21 @@
 """
-Multi-site job scraping without AI-dependent filtering.
-
-Scrapes jobs from all four supported sites using the user's target_role
-as the search keyword, extracts structured fields deterministically,
-and saves all jobs to the database (users filter by role in the dashboard).
+Multi-site scraping orchestrator. As of Phase 12, this no longer calls
+Gemini for every scraped job - see extraction_pipeline.py for the
+deterministic-first extraction chain. This file's job is just: run
+each site's scraper, dedupe, hand each item to the pipeline, apply
+role filtering, save, alert.
 """
 
 import logging
 
 from .models import JobPosting
-from .extraction import extract_job_fields
 from .matching import score_job
 from .telegram_notify import send_telegram_alert
 from .scraper import scrape_internshala
 from .naukri_scraper import scrape_naukri
 from .foundit_scraper import scrape_foundit
 from .workindia_scraper import scrape_workindia
+from .extraction_pipeline import process_scraped_item, GeminiRunState
 
 MATCH_ALERT_THRESHOLD = 70
 
@@ -36,25 +36,40 @@ def _site_label(site: str) -> str:
 def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
     """
     Scrapes the given sites (defaults to all four) using the user's
-    Profile.target_role as the search keyword.
-    
-    All jobs with extractable title/company are saved (no role filtering).
-    Users can filter by role category in the dashboard.
+    Profile.target_role as the search keyword. Each result goes
+    through the deterministic-first extraction_pipeline - Gemini is
+    only touched when that pipeline genuinely can't recover a required
+    field, or for role classification (see extraction_pipeline.py).
+
+    Returns the SAME summary dict shape as before (added,
+    skipped_duplicate, skipped_wrong_role, failed_extraction, errors,
+    sites, keyword, target_category) so the CLI command, the web
+    button, and their templates don't need any changes - plus two new
+    additive keys (gemini_calls_made, gemini_disabled_reason) for
+    visibility into how much Gemini was actually used this run.
     """
     profile = getattr(user, "profile", None)
     keyword = (profile.target_role if profile and profile.target_role else "software engineer")
+    target_category = profile.target_role_category if profile else "software_engineering"
 
     sites = sites or list(SITE_SCRAPERS.keys())
+    # ONE circuit breaker shared across every site/job in THIS run only -
+    # a fresh GeminiRunState is created per call, so a quota exhaustion
+    # here can never leak into a different request/user later.
+    gemini_state = GeminiRunState()
 
     summary = {
         "keyword": keyword,
+        "target_category": target_category,
         "sites": {site: 0 for site in SITE_SCRAPERS.keys()},
         "added": 0,
         "skipped_duplicate": 0,
+        "skipped_wrong_role": 0,
         "failed_extraction": 0,
         "errors": [],
+        "gemini_calls_made": 0,
+        "gemini_disabled_reason": None,
     }
-
 
     for site in sites:
         scraper_fn = SITE_SCRAPERS.get(site)
@@ -69,12 +84,15 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
             if not isinstance(scraped, list):
                 raise TypeError(f"Scraper returned {type(scraped).__name__}, expected list")
         except Exception as e:
+            # A single site failing (timeout, selector drift, anti-bot
+            # block, network error) must never stop the other sites.
             summary["errors"].append(f"[{_site_label(site)}] FAILED: {e}")
             logger.exception("[%s] FAILED: %s", _site_label(site), e)
             summary["sites"][site] = 0
             continue
 
         print(f"[{_site_label(site)}] Found {len(scraped)} jobs")
+
         for item in scraped:
             if not isinstance(item, dict):
                 summary["errors"].append(f"[{_site_label(site)}] Invalid job payload: {item!r}")
@@ -87,11 +105,15 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
             if not raw_text:
                 summary["errors"].append(f"[{_site_label(site)}] Empty raw_text for '{title or 'unknown'}'")
                 continue
-
             if not title or not company:
                 summary["errors"].append(f"[{_site_label(site)}] Missing title/company: {title!r} / {company!r}")
                 continue
 
+            # Dedup BEFORE the extraction pipeline runs at all - this is
+            # also what keeps a job that's already in the DB from ever
+            # touching Gemini again (satisfies "avoid repeat AI calls
+            # for jobs already processed" without adding new caching
+            # infrastructure).
             already_exists = JobPosting.objects.filter(
                 title__iexact=title, company__iexact=company
             ).exists()
@@ -99,38 +121,37 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
                 summary["skipped_duplicate"] += 1
                 continue
 
-            try:
-                extracted = extract_job_fields(raw_text)
-            except (ValueError, RuntimeError) as e:
+            job_fields, log_lines = process_scraped_item(item, site, gemini_state)
+            for line in log_lines:
+                print(line)
+
+            if job_fields is None:
+                # One bad job must never stop the run - just count it
+                # and move on to the next item/site.
                 summary["failed_extraction"] += 1
-                summary["errors"].append(f"[{_site_label(site)}] Extraction failed for '{title}': {e}")
-                logger.exception("[%s] Extraction failed for %s", _site_label(site), title)
+                summary["errors"].append(f"[{_site_label(site)}] Extraction failed for '{title}' (see log above)")
                 continue
 
-            title_value = (extracted.get("title") or "").strip()
-            company_value = (extracted.get("company") or "").strip()
-            if not title_value or not company_value:
-                summary["failed_extraction"] += 1
-                summary["errors"].append(
-                    f"[{_site_label(site)}] Missing title/company after extraction: '{title_value}' / '{company_value}'"
-                )
+            role_category = job_fields.get("role_category") or "other"
+            if role_category != target_category:
+                summary["skipped_wrong_role"] += 1
                 continue
 
-            # Extract job - all jobs are saved (no role filtering)
             job = JobPosting.objects.create(
-                raw_text=raw_text,
+                raw_text=job_fields["raw_text"],
                 source=site,
-                title=title_value,
-                company=company_value,
-                location=(extracted.get("location") or "").strip(),
-                skills_required=extracted.get("skills_required") or [],
-                requirements=extracted.get("requirements") or [],
-                salary_range=(extracted.get("salary_range") or "").strip(),
-                deadline=extracted.get("deadline") or None,
-                role_category=extracted.get("role_category") or "other",
+                title=job_fields["title"],
+                company=job_fields["company"],
+                location=job_fields.get("location") or "",
+                skills_required=job_fields.get("skills_required") or [],
+                requirements=job_fields.get("requirements") or [],
+                salary_range=job_fields.get("salary_range") or "",
+                deadline=job_fields.get("deadline") or None,
+                role_category=role_category,
             )
             job.match_score = score_job(job, user)
             job.save()
+            print(f"[Database] Job saved: {job.title} at {job.company}")
 
             summary["added"] += 1
             site_added += 1
@@ -140,5 +161,7 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
 
         summary["sites"][site] = site_added
 
+    summary["gemini_calls_made"] = gemini_state.calls_made
+    summary["gemini_disabled_reason"] = gemini_state.disabled_reason
     print(summary)
     return summary

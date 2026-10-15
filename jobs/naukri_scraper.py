@@ -2,6 +2,8 @@
 
 from playwright.sync_api import sync_playwright
 
+from .jsonld_extraction import extract_json_ld_jobpostings
+
 NAUKRI_SEARCH_URL = "https://www.naukri.com/{keyword}-jobs"
 
 
@@ -30,8 +32,22 @@ def scrape_naukri(keyword: str = "software engineer", max_results: int = 10) -> 
                 "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
             ),
         )
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(2500)
+
+        # --- TEMPORARY DIAGNOSTIC LOGGING (read-only, no selector/logic changes) ---
+        print(f"[Naukri][DIAG] Requested URL: {url}")
+        print(f"[Naukri][DIAG] Final URL after redirects: {page.url}")
+        print(f"[Naukri][DIAG] HTTP status: {response.status if response else 'unknown'}")
+        print(f"[Naukri][DIAG] Page title: {page.title()!r}")
+        _page_html = page.content()
+        _anti_bot_hits = [kw for kw in ["captcha", "verify you are human", "access denied", "are you a robot", "unusual traffic", "just a moment", "blocked", "enable javascript"] if kw in _page_html.lower()]
+        print(f"[Naukri][DIAG] Anti-bot/JS-wall indicators found: {_anti_bot_hits or 'none'}")
+        print(f"[Naukri][DIAG] Page HTML length: {len(_page_html)} chars")
+        # --- END TEMPORARY DIAGNOSTIC LOGGING (per-selector counts below) ---
+
+        # Phase 12: capture Schema.org JobPosting JSON-LD if present (often empty on listing pages - see jsonld_extraction.py)
+        json_ld_postings = extract_json_ld_jobpostings(page.content())
 
         selectors = [
             ".cust-job-tuple",
@@ -41,6 +57,8 @@ def scrape_naukri(keyword: str = "software engineer", max_results: int = 10) -> 
             "[data-testid='job-card']",
             "div[data-job-id]",
         ]
+        for _sel in selectors:
+            print(f"[Naukri][DIAG] Selector '{_sel}' matches: {page.locator(_sel).count()}")
         found = False
         for selector in selectors:
             if page.locator(selector).count():
@@ -69,7 +87,7 @@ def scrape_naukri(keyword: str = "software engineer", max_results: int = 10) -> 
             if skills:
                 raw_text_parts.append(f"Skills: {skills}")
 
-            results.append({"title": title, "company": company, "raw_text": "\n".join(raw_text_parts)})
+            results.append({"title": title, "company": company, "raw_text": "\n".join(raw_text_parts), "json_ld": json_ld_postings})
 
         browser.close()
 

@@ -34,14 +34,8 @@
     </div>
 {% endif %}
 
-<form method="get" style="display:flex; gap:12px; margin-bottom:24px; flex-wrap:wrap;">
+<form method="get" style="display:flex; gap:12px; margin-bottom:24px;">
     <input type="text" name="q" value="{{ query }}" placeholder="Search job title, company..." style="max-width:340px;">
-    <select name="role_category" style="width:auto; padding:10px 12px;">
-        <option value="">All roles</option>
-        {% for value, label in role_categories %}
-            <option value="{{ value }}"{% if role_filter == value %} selected{% endif %}>{{ label }}</option>
-        {% endfor %}
-    </select>
     <button type="submit" class="btn btn-outline">Search</button>
     <span class="btn btn-outline" style="cursor:default; color:var(--text-soft); margin-left:auto;">Sort: Best Match</span>
 </form>
@@ -58,9 +52,6 @@
         </div>
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
             <span class="badge badge-soft">From: {{ item.job.source|default:"manual"|title }}</span>
-            {% if item.job.role_category %}
-                <span class="badge badge-soft">Role: {{ item.job.role_category|title }}</span>
-            {% endif %}
         </div>
         <div>
             {% for skill in item.job.skills_required|slice:":4" %}
