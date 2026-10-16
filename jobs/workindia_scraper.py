@@ -46,6 +46,42 @@ def scrape_workindia(keyword: str = "software engineer", max_results: int = 10) 
         print(f"[Workindia][DIAG] Page HTML length: {len(_page_html)} chars")
         # --- END TEMPORARY DIAGNOSTIC LOGGING (selector-count diagnostics below, after `selectors` is defined) ---
 
+        # --- ADDITIONAL TEMPORARY DIAGNOSTIC LOGGING (WorkIndia only, read-only, no selector/logic changes) ---
+        import os as _os
+        import re as _re
+
+        _debug_dir = _os.path.join(_os.getcwd(), "scraper_debug")
+        _os.makedirs(_debug_dir, exist_ok=True)
+        _debug_path = _os.path.join(_debug_dir, "workindia_debug.html")
+        with open(_debug_path, "w", encoding="utf-8") as _f:
+            _f.write(_page_html)
+        print(f"[WorkIndia][DIAG] Full page HTML saved to: {_debug_path}")
+
+        _keyword_counts = {kw: _page_html.lower().count(kw) for kw in
+                            ["job", "title", "company", "salary", "location", "experience", "apply", "vacancy", "hiring"]}
+        print(f"[WorkIndia][DIAG] Keyword occurrence counts in raw HTML: {_keyword_counts}")
+
+        # SPA / client-side-rendering signal: a near-empty root div is typical of React/Angular/Vue apps
+        # that fetch and render job data AFTER the initial page load, not in the HTML we captured.
+        _root_match = _re.search(r'<div[^>]+id=["\'](root|app|__next)["\'][^>]*>(.*?)</div>', _page_html, _re.IGNORECASE | _re.DOTALL)
+        if _root_match:
+            _inner_len = len(_root_match.group(2).strip())
+            _verdict = "looks EMPTY - likely JS-rendered after load" if _inner_len < 200 else "has real content already in initial HTML"
+            print(f"[WorkIndia][DIAG] SPA-style root container found (id={_root_match.group(1)!r}), inner content length: {_inner_len} chars ({_verdict})")
+        else:
+            print("[WorkIndia][DIAG] No typical SPA root container (#root/#app/#__next) found in the HTML")
+
+        _framework_hits = [fw for fw in ["react", "next.js", "_next/static", "ng-app", "angular", "vue", "__nuxt__", "__initial_state__"] if fw in _page_html.lower()]
+        print(f"[WorkIndia][DIAG] Frontend framework indicators found: {_framework_hits or 'none'}")
+
+        _job_idx = _page_html.lower().find("job")
+        if _job_idx != -1:
+            _snippet = _page_html[max(0, _job_idx - 200):_job_idx + 300]
+            print(f"[WorkIndia][DIAG] HTML snippet around first 'job' occurrence:\n{_snippet}\n")
+        else:
+            print("[WorkIndia][DIAG] The word 'job' does not appear ANYWHERE in the returned HTML")
+        # --- END ADDITIONAL DIAGNOSTIC LOGGING ---
+
         # Phase 12: capture Schema.org JobPosting JSON-LD if present (often empty on listing pages - see jsonld_extraction.py)
         json_ld_postings = extract_json_ld_jobpostings(page.content())
 
