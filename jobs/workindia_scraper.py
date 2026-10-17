@@ -4,7 +4,52 @@ from playwright.sync_api import sync_playwright
 
 from .jsonld_extraction import extract_json_ld_jobpostings
 
-WORKINDIA_SEARCH_URL = "https://www.workindia.in/job-search/{keyword}-jobs"
+# FIX (confirmed via real page inspection, not guessed): WorkIndia has NO
+# "/job-search/{keyword}-jobs" path at all - that was hitting their custom
+# 200-status "soft 404" page every time. The real site only has a FIXED set
+# of category landing pages (e.g. "/software-developer-jobs", "/hr-jobs"),
+# not free-text keyword search - confirmed by reading the actual footer
+# navigation links on a real WorkIndia page.
+WORKINDIA_SEARCH_URL = "https://www.workindia.in/{slug}"
+
+# Maps common target roles to the closest REAL category slug that exists on
+# the site. Unmatched roles fall back to "software-developer-jobs" - the
+# closest real category to this project's target audience (software/backend
+# roles); WorkIndia's own category list is overwhelmingly non-tech
+# (cook-jobs, driving-jobs, maid-jobs, etc.), so most software-specific
+# search terms won't have an exact category match.
+_KNOWN_CATEGORIES = {
+    "software developer": "software-developer-jobs",
+    "software engineer": "software-developer-jobs",
+    "python developer": "software-developer-jobs",
+    "backend developer": "software-developer-jobs",
+    "developer": "software-developer-jobs",
+    "sde": "software-developer-jobs",
+    "engineer": "engineer-jobs",
+    "hr": "hr-jobs",
+    "marketing": "marketing-jobs",
+    "digital marketing": "digital-marketing-jobs",
+    "sales": "business-development-jobs",
+    "business development": "business-development-jobs",
+    "data entry": "data-entry-jobs",
+    "teacher": "teacher-jobs",
+    "technician": "technician-jobs",
+    "nurse": "nurse-jobs",
+    "receptionist": "receptionist-jobs",
+    "telecalling": "telecalling-jobs",
+    "graphic designer": "graphic-designer-jobs",
+}
+_DEFAULT_CATEGORY = "software-developer-jobs"
+
+
+def _resolve_category_slug(keyword: str) -> str:
+    normalized = (keyword or "").strip().lower()
+    if normalized in _KNOWN_CATEGORIES:
+        return _KNOWN_CATEGORIES[normalized]
+    for key, slug in _KNOWN_CATEGORIES.items():
+        if key in normalized:
+            return slug
+    return _DEFAULT_CATEGORY
 
 
 def _clean_text(value):
@@ -21,7 +66,9 @@ def _pick_text(card, selectors):
 
 def scrape_workindia(keyword: str = "software engineer", max_results: int = 10) -> list[dict]:
     results = []
-    url = WORKINDIA_SEARCH_URL.format(keyword=keyword.strip().lower().replace(" ", "-"))
+    slug = _resolve_category_slug(keyword)
+    url = WORKINDIA_SEARCH_URL.format(slug=slug)
+    print(f"[WorkIndia][DIAG] Resolved '{keyword}' -> category slug '{slug}'")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
