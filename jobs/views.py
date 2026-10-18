@@ -202,6 +202,19 @@ def job_matches(request):
     profile = get_profile_for(request.user)
     profile_skills = profile.skills if profile else []
 
+    # Live per-viewer role filtering: JobPosting is a shared pool across
+    # ALL accounts (same principle as the live scoring above - the
+    # stored fields on a job never change per-viewer, but what a given
+    # viewer SEES does). role_category is stored permanently on every
+    # job at extraction time and never changes; what changes here is
+    # WHICH jobs a given viewer sees, filtered against THEIR OWN
+    # current target_role_category, evaluated fresh on every request.
+    # If a user changes their target role, this list updates
+    # immediately with no re-scrape needed - the same job row is just
+    # included/excluded differently depending on who's looking at it.
+    if profile and profile.target_role_category:
+        jobs = jobs.filter(role_category=profile.target_role_category)
+
     jobs_with_display = []
     for job in jobs:
         breakdown = match_breakdown(job.skills_required, profile_skills)

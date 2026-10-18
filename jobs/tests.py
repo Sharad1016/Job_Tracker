@@ -1,5 +1,5 @@
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, Client
 from unittest.mock import patch
 
 from jobs.models import JobPosting, Profile
@@ -152,3 +152,95 @@ class RunScrapeTests(TestCase):
         self.assertEqual(summary["sites"]["internshala"], 1)
         self.assertEqual(summary["added"], 1)
         self.assertTrue(any("naukri" in e.lower() and "failed" in e.lower() for e in summary["errors"]))
+
+
+class LivePerViewerRoleFilterTests(TestCase):
+    """
+    Covers the fix that moved role filtering from scrape-time
+    (permanently discarding jobs) to display-time (per-viewer,
+    reversible, no re-scrape needed).
+    """
+
+    def setUp(self):
+        self.client = Client()
+
+        self.user_a = User.objects.create_user(username="usera", password="pw")
+        Profile.objects.create(
+            user=self.user_a, skills=["Python"],
+            target_role="Python Developer", target_role_category="software_engineering",
+        )
+
+        self.user_b = User.objects.create_user(username="userb", password="pw")
+        Profile.objects.create(
+            user=self.user_b, skills=["Sales"],
+            target_role="Sales Executive", target_role_category="sales",
+        )
+
+        self.se_job = JobPosting.objects.create(
+            raw_text="Role: Python Developer", source="internshala",
+            title="Python Developer", company="Acme", role_category="software_engineering",
+        )
+        self.sales_job = JobPosting.objects.create(
+            raw_text="Role: Sales Executive", source="internshala",
+            title="Sales Executive", company="Beta Corp", role_category="sales",
+        )
+
+    def test_run_scrape_no_longer_discards_off_role_jobs(self):
+        """Requirement: jobs must NOT be permanently excluded from the
+        database just because they don't match the scraping user's role."""
+        def fake_scraper(keyword, max_results):
+            return [{
+                "title": "Sales Executive", "company": "Gamma Inc",
+                "raw_text": "Role: Sales Executive\nCompany: Gamma Inc\nSkills: Communication",
+                "json_ld": [],
+            }]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"internshala": fake_scraper}), \
+             patch("jobs.extraction_pipeline.classify_role_category", return_value=("sales", None)):
+            # user_a targets software_engineering, but the scraped job is "sales"
+            summary = run_scrape(self.user_a, sites=["internshala"], max_results_per_site=3)
+
+        self.assertEqual(summary["added"], 1)  # saved despite not matching user_a's role
+        self.assertEqual(summary["skipped_wrong_role"], 0)  # no longer used to discard
+        self.assertTrue(JobPosting.objects.filter(company="Gamma Inc").exists())
+
+    def test_different_users_see_different_jobs_from_same_shared_pool(self):
+        self.client.login(username="usera", password="pw")
+        response_a = self.client.get("/matches/")
+        titles_a = [j["job"].title for j in response_a.context["jobs_with_display"]]
+        self.assertIn("Python Developer", titles_a)
+        self.assertNotIn("Sales Executive", titles_a)
+
+        self.client.login(username="userb", password="pw")
+        response_b = self.client.get("/matches/")
+        titles_b = [j["job"].title for j in response_b.context["jobs_with_display"]]
+        self.assertIn("Sales Executive", titles_b)
+        self.assertNotIn("Python Developer", titles_b)
+
+    def test_changing_target_role_changes_displayed_jobs_without_rescrape(self):
+        self.client.login(username="usera", password="pw")
+
+        response_before = self.client.get("/matches/")
+        titles_before = [j["job"].title for j in response_before.context["jobs_with_display"]]
+        self.assertNotIn("Sales Executive", titles_before)
+
+        # User A changes their target role - no new scrape happens, same DB rows
+        profile_a = Profile.objects.get(user=self.user_a)
+        profile_a.target_role_category = "sales"
+        profile_a.save()
+
+        response_after = self.client.get("/matches/")
+        titles_after = [j["job"].title for j in response_after.context["jobs_with_display"]]
+        self.assertIn("Sales Executive", titles_after)
+        self.assertNotIn("Python Developer", titles_after)
+
+    def test_scoring_and_role_category_storage_are_unaffected(self):
+        """role_category must still be stored on save, and match scoring
+        must still work exactly as before - only the display filter is new."""
+        self.assertEqual(self.se_job.role_category, "software_engineering")
+        self.assertEqual(self.sales_job.role_category, "sales")
+
+        self.client.login(username="usera", password="pw")
+        response = self.client.get("/matches/")
+        entry = next(j for j in response.context["jobs_with_display"] if j["job"].id == self.se_job.id)
+        self.assertIn("live_score", entry)

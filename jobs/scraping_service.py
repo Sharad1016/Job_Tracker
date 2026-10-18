@@ -41,6 +41,15 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
     only touched when that pipeline genuinely can't recover a required
     field, or for role classification (see extraction_pipeline.py).
 
+    NOTE: role_category is still classified and stored on every job
+    here (unchanged), but jobs are NO LONGER discarded at scrape time
+    for not matching the scraping user's target_role_category. Every
+    structurally valid job gets saved to the shared JobPosting pool
+    regardless of who scraped it - role filtering now happens live at
+    DISPLAY time instead, per-viewer, in job_matches() (views.py). This
+    means the person who happens to click "Fetch New Jobs" doesn't
+    determine what role of jobs end up visible to every other account.
+
     Returns the SAME summary dict shape as before (added,
     skipped_duplicate, skipped_wrong_role, failed_extraction, errors,
     sites, keyword, target_category) so the CLI command, the web
@@ -64,7 +73,7 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
         "sites": {site: 0 for site in SITE_SCRAPERS.keys()},
         "added": 0,
         "skipped_duplicate": 0,
-        "skipped_wrong_role": 0,
+        "skipped_wrong_role": 0,  # always 0 now - role filtering moved to display time, see job_matches() in views.py
         "failed_extraction": 0,
         "errors": [],
         "gemini_calls_made": 0,
@@ -133,9 +142,15 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
                 continue
 
             role_category = job_fields.get("role_category") or "other"
-            if role_category != target_category:
-                summary["skipped_wrong_role"] += 1
-                continue
+            # NOTE: role filtering used to happen HERE at scrape time,
+            # permanently discarding jobs that didn't match whoever
+            # clicked "Fetch New Jobs". That's been moved to display
+            # time (see job_matches() in views.py) so the same shared
+            # job pool can show different results to different users
+            # based on EACH viewer's own target_role_category, without
+            # needing to re-scrape when someone changes their target
+            # role. role_category is still stored on every job below -
+            # nothing about extraction/classification changed.
 
             job = JobPosting.objects.create(
                 raw_text=job_fields["raw_text"],
