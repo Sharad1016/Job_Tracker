@@ -89,7 +89,7 @@ class ExtractionPipelineTests(TestCase):
         ) as mock_classify:
             job1, log1 = process_scraped_item(item1, "internshala", gemini_state)
             self.assertFalse(gemini_state.available)  # disabled after job 1's 429
-            job2, log2 = process_scraped_item(item2, "naukri", gemini_state)
+            job2, log2 = process_scraped_item(item2, "workindia", gemini_state)
 
         self.assertIsNotNone(job1)
         self.assertIsNotNone(job2)
@@ -134,7 +134,7 @@ class RunScrapeTests(TestCase):
         """A single site failing outright (timeout, selector break, etc.)
         must not stop other sites from being scraped."""
         def broken_scraper(keyword, max_results):
-            raise TimeoutError("Naukri selector timed out")
+            raise TimeoutError("selector timed out")
 
         def working_scraper(keyword, max_results):
             return [{
@@ -144,14 +144,14 @@ class RunScrapeTests(TestCase):
                 "json_ld": [],
             }]
 
-        with patch("jobs.scraping_service.SITE_SCRAPERS", {"naukri": broken_scraper, "internshala": working_scraper}), \
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"brokensite": broken_scraper, "internshala": working_scraper}), \
              patch("jobs.extraction_pipeline.classify_role_category", return_value=("software_engineering", None)):
-            summary = run_scrape(self.user, sites=["naukri", "internshala"], max_results_per_site=3)
+            summary = run_scrape(self.user, sites=["brokensite", "internshala"], max_results_per_site=3)
 
-        self.assertEqual(summary["sites"]["naukri"], 0)
+        self.assertEqual(summary["sites"]["brokensite"], 0)
         self.assertEqual(summary["sites"]["internshala"], 1)
         self.assertEqual(summary["added"], 1)
-        self.assertTrue(any("naukri" in e.lower() and "failed" in e.lower() for e in summary["errors"]))
+        self.assertTrue(any("brokensite" in e.lower() and "failed" in e.lower() for e in summary["errors"]))
 
 
 class LivePerViewerRoleFilterTests(TestCase):

@@ -6,7 +6,7 @@ from jobs.scraping_service import run_scrape, SITE_SCRAPERS
 
 class Command(BaseCommand):
     help = (
-        "Scrapes one or all of Internshala/Naukri/Foundit/WorkIndia, adds new "
+        "Scrapes one or all of Internshala/WorkIndia, adds new "
         "postings (skipping duplicates and jobs outside the user's target "
         "role), extracts structured fields with AI, and scores them."
     )

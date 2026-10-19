@@ -3,26 +3,19 @@ Multi-site scraping orchestrator. As of Phase 12, this no longer calls
 Gemini for every scraped job - see extraction_pipeline.py for the
 deterministic-first extraction chain. This file's job is just: run
 each site's scraper, dedupe, hand each item to the pipeline, apply
-role filtering, save, alert.
+role filtering, save.
 """
 
 import logging
 
 from .models import JobPosting
 from .matching import score_job
-from .telegram_notify import send_telegram_alert
 from .scraper import scrape_internshala
-from .naukri_scraper import scrape_naukri
-from .foundit_scraper import scrape_foundit
 from .workindia_scraper import scrape_workindia
 from .extraction_pipeline import process_scraped_item, GeminiRunState
 
-MATCH_ALERT_THRESHOLD = 70
-
 SITE_SCRAPERS = {
     "internshala": scrape_internshala,
-    "naukri": scrape_naukri,
-    "foundit": scrape_foundit,
     "workindia": scrape_workindia,
 }
 
@@ -170,9 +163,6 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
 
             summary["added"] += 1
             site_added += 1
-
-            if job.match_score >= MATCH_ALERT_THRESHOLD:
-                send_telegram_alert(job)
 
         summary["sites"][site] = site_added
 

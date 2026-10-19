@@ -2,7 +2,5 @@ django>=5.0
 google-genai
 python-dotenv
 playwright
-django-apscheduler
-requests
 pdfplumber
 python-docx

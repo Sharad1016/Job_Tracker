@@ -409,16 +409,14 @@ def run_scraper(request):
     so no terminal is needed for day-to-day use.
 
     IMPORTANT KNOWN LIMITATION: this runs SYNCHRONOUSLY inside the
-    request/response cycle. Scraping 4 sites with Playwright + an AI
+    request/response cycle. Scraping with Playwright + an AI
     extraction call per new listing is genuinely slow (can be 30s-2min+
     depending on how many new jobs are found), so the browser tab will
     just sit on a loading spinner for that whole time - there's no
     progress bar or background task queue (e.g. Celery) here. That's a
-    deliberate simplification appropriate for a personal/demo project,
-    the same way the scheduler itself runs in-process rather than as a
-    separate worker (see PROJECT_CONTEXT.md, Important Technical
-    Decisions) - NOT how this should be architected for real production
-    traffic with many concurrent users clicking the button at once.
+    deliberate simplification appropriate for a personal/demo project -
+    NOT how this should be architected for real production traffic
+    with many concurrent users clicking the button at once.
     """
     if request.method == "POST":
         from .scraping_service import run_scrape, SITE_SCRAPERS
