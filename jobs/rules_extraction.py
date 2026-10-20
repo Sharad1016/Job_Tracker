@@ -17,6 +17,10 @@ _SALARY_PATTERNS = [
     re.compile(r"₹\s*[\d,]+(?:\.\d+)?\s*-\s*₹?\s*[\d,]+(?:\.\d+)?\s*(?:LPA|lakh|lakhs|per month|/month|p\.?a\.?)?", re.IGNORECASE),
     re.compile(r"\b\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?\s*LPA\b", re.IGNORECASE),
     re.compile(r"₹\s*[\d,]+(?:\.\d+)?\s*(?:per month|/month|p\.?m\.?)", re.IGNORECASE),
+    # WorkIndia's actual format, confirmed from real scraped cards:
+    # "Rs. 28000 - Rs. 38000" - "Rs." not "₹", and repeated on both sides.
+    re.compile(r"Rs\.?\s*[\d,]+(?:\.\d+)?\s*-\s*Rs\.?\s*[\d,]+(?:\.\d+)?\s*(?:per month|/month|p\.?m\.?|LPA)?", re.IGNORECASE),
+    re.compile(r"Rs\.?\s*[\d,]+(?:\.\d+)?\s*(?:per month|/month|p\.?m\.?)", re.IGNORECASE),
 ]
 
 _EMPLOYMENT_TYPE_KEYWORDS = [

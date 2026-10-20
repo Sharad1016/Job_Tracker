@@ -154,6 +154,82 @@ class RunScrapeTests(TestCase):
         self.assertTrue(any("brokensite" in e.lower() and "failed" in e.lower() for e in summary["errors"]))
 
 
+class WorkIndiaFullPipelineTests(TestCase):
+    """
+    Phase 10 fix: WorkIndia cards use real CONFIRMED selectors now
+    (.JobItemV2 / h2.text-brand a / .CompanyDetail / .LocationDetail /
+    .f14.f-bold / .ExperienceDetail - see workindia_scraper.py), and the
+    raw_text they produce uses the site's real "Rs. X - Rs. Y" salary
+    format. This test proves the full chain - fake scraper -> run_scrape()
+    -> real DB row - actually lands location and salary_range, which
+    previously came back empty due to two separate bugs:
+      1. extraction_pipeline.py's raw_text fallback for location only
+         ran when title/company were BOTH missing, which never happens
+         for WorkIndia (its own selectors already find them).
+      2. rules_extraction.py's salary regex only recognized "₹", not
+         WorkIndia's actual "Rs. X - Rs. Y" format.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="workindia_tester", password="pw")
+        Profile.objects.create(
+            user=self.user, skills=["Python"],
+            target_role="Python Developer", target_role_category="software_engineering",
+        )
+
+    def test_location_and_salary_reach_the_database(self):
+        def fake_workindia_scraper(keyword, max_results):
+            # Mirrors exactly what workindia_scraper.py now assembles from
+            # a real card (verified against a real saved WorkIndia page).
+            raw_text = (
+                "Role: Delivery Boy\n"
+                "Company: Zepto\n"
+                "Location: Purana Kanpur, Kanpur\n"
+                "Salary: Rs. 50000 - Rs. 75000\n"
+                "Experience: Fresher\n"
+                "Category: Delivery"
+            )
+            return [{
+                "title": "Delivery Boy",
+                "company": "Zepto",
+                "raw_text": raw_text,
+                "json_ld": [],
+                "application_url": "https://www.workindia.in/jobs/delivery_boy-purana_kanpur-kanpur-10915947/",
+            }]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"workindia": fake_workindia_scraper}), \
+             patch("jobs.extraction_pipeline.classify_role_category", return_value=("other", None)):
+            summary = run_scrape(self.user, sites=["workindia"], max_results_per_site=3)
+
+        self.assertEqual(summary["added"], 1)
+        job = JobPosting.objects.get(title="Delivery Boy", company="Zepto")
+        self.assertEqual(job.location, "Purana Kanpur, Kanpur")
+        self.assertEqual(job.salary_range, "Rs. 50000 - Rs. 75000")
+        self.assertEqual(
+            job.application_url,
+            "https://www.workindia.in/jobs/delivery_boy-purana_kanpur-kanpur-10915947/",
+        )
+
+    def test_location_still_fills_via_generic_fallback_when_scraper_omits_it(self):
+        """Belt-and-suspenders: even if a future scraper doesn't find
+        location/salary via its own selectors, the raw_text line-prefix
+        fallback must still pick them up - this was the original bug,
+        now fixed independently of the title/company gate."""
+        item = {
+            "title": "Backend Developer",
+            "company": "Acme Corp",
+            "raw_text": "Role: Backend Developer\nCompany: Acme Corp\nLocation: Indore\nSalary: Rs. 20000 - Rs. 30000",
+            "json_ld": [],
+        }
+        gemini_state = GeminiRunState()
+        with patch("jobs.extraction_pipeline.classify_role_category", return_value=("software_engineering", None)):
+            job_fields, log_lines = process_scraped_item(item, "workindia", gemini_state)
+
+        self.assertIsNotNone(job_fields)
+        self.assertEqual(job_fields["location"], "Indore")
+        self.assertEqual(job_fields["salary_range"], "Rs. 20000 - Rs. 30000")
+
+
 class LivePerViewerRoleFilterTests(TestCase):
     """
     Covers the fix that moved role filtering from scrape-time

@@ -136,6 +136,7 @@ def process_scraped_item(item: dict, site: str, gemini_state: GeminiRunState) ->
         "salary_range": "",
         "deadline": None,
         "raw_text": raw_text,
+        "application_url": (item.get("application_url") or "").strip(),
     }
 
     # 1. JSON-LD
@@ -160,13 +161,21 @@ def process_scraped_item(item: dict, site: str, gemini_state: GeminiRunState) ->
     # 2. Website-specific parser (already ran inside the scraper itself)
     log.append("[Extraction] Website parser -> " + ("success" if job["title"] and job["company"] else "partial"))
 
-    # 3. Generic raw_text fallback (only if title/company are STILL missing)
-    if not job["title"] or not job["company"]:
+    # 3. Generic raw_text fallback.
+    # BUGFIX: this used to only run when title/company were still missing,
+    # which meant location (and salary, below) from the raw-text
+    # "Location:"/"Salary:" lines never got parsed for scrapers - like
+    # WorkIndia's - that already find title/company directly via their own
+    # selectors. Location/salary need their own independent check: run the
+    # line-prefix parser whenever THOSE specific fields are still empty,
+    # not just when title/company are missing.
+    if not job["title"] or not job["company"] or not job["location"] or not job["salary_range"]:
         generic = _fallback_job_fields(raw_text)
         job["title"] = job["title"] or generic.get("title") or ""
         job["company"] = job["company"] or generic.get("company") or ""
         job["location"] = job["location"] or generic.get("location") or ""
-        log.append("[Extraction] Generic raw_text parser -> " + ("success" if job["title"] and job["company"] else "failed"))
+        job["salary_range"] = job["salary_range"] or generic.get("salary_range") or ""
+        log.append("[Extraction] Generic raw_text parser -> " + ("success" if job["title"] and job["company"] else "partial/failed"))
 
     # 4. Regex/rules
     if not job["salary_range"]:

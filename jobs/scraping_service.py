@@ -155,6 +155,7 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
                 requirements=job_fields.get("requirements") or [],
                 salary_range=job_fields.get("salary_range") or "",
                 deadline=job_fields.get("deadline") or None,
+                application_url=job_fields.get("application_url") or "",
                 role_category=role_category,
             )
             job.match_score = score_job(job, user)
