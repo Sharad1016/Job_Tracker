@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from jobs.models import JobPosting, Profile
 from jobs.extraction import extract_job_fields
-from jobs.extraction_pipeline import GeminiRunState, process_scraped_item
+from jobs.extraction_pipeline import GeminiRunState, process_scraped_item, _keyword_classify
 from jobs.scraping_service import run_scrape
 
 
@@ -228,6 +228,108 @@ class WorkIndiaFullPipelineTests(TestCase):
         self.assertIsNotNone(job_fields)
         self.assertEqual(job_fields["location"], "Indore")
         self.assertEqual(job_fields["salary_range"], "Rs. 20000 - Rs. 30000")
+
+
+class KeywordRoleClassificationTests(TestCase):
+    """
+    CLASSIFY THE JOB, NOT THE COMPANY. Covers the deterministic
+    (Gemini-unavailable) fallback classifier used by both the direct
+    unit tests below and, at the pipeline level in
+    WorkIndiaFullPipelineTests, when Gemini is disabled.
+    """
+
+    def test_title_only_examples(self):
+        cases = {
+            "Python Developer": "software_engineering",
+            "Software Engineer": "software_engineering",
+            "Backend Developer": "software_engineering",
+            "Frontend Developer": "software_engineering",
+            "Full Stack Developer": "software_engineering",
+            "Associate Software Engineer": "software_engineering",
+            "Sales Executive": "sales",
+            "Business Development Executive": "sales",
+            "HR Executive": "hr",
+            "Recruiter": "hr",
+            "Marketing Executive": "marketing",
+            "Data Analyst": "data_analytics",
+            "UI/UX Designer": "design",
+            "Registration & License Executive": "other",
+        }
+        for title, expected in cases.items():
+            with self.subTest(title=title):
+                self.assertEqual(_keyword_classify(title, raw_text=f"Role: {title}"), expected)
+
+    def test_company_name_does_not_override_the_real_role(self):
+        # The exact bug report: "software" inside the company name used
+        # to make an unrelated job classify as software_engineering.
+        result = _keyword_classify(
+            "Registration & License Executive",
+            "Role: Registration & License Executive\nCompany: Hoog Software Private Limited",
+        )
+        self.assertNotEqual(result, "software_engineering")
+        self.assertEqual(result, "other")
+
+    def test_sales_role_at_a_software_company(self):
+        result = _keyword_classify(
+            "Sales Executive - Software Company",
+            "Role: Sales Executive - Software Company\nCompany: ABC Software Solutions",
+        )
+        self.assertEqual(result, "sales")
+
+    def test_hr_role_at_an_it_company(self):
+        result = _keyword_classify(
+            "HR Executive",
+            "Role: HR Executive\nCompany: XYZ Software Technologies",
+        )
+        self.assertEqual(result, "hr")
+
+    def test_hr_recruiter_role_with_company_suffix_in_title(self):
+        result = _keyword_classify(
+            "HR Recruiter - IT Company",
+            "Role: HR Recruiter - IT Company\nCompany: SomeCo",
+        )
+        self.assertEqual(result, "hr")
+
+
+class WorkIndiaRoleMisclassificationRegressionTests(TestCase):
+    """Reproduces the exact reported bug end-to-end (fake scraper ->
+    run_scrape() -> DB row) with Gemini forced unavailable, so the
+    deterministic fallback is what's actually under test - this is the
+    path a live 429/quota outage would hit in production."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="role_bug_tester", password="pw")
+        Profile.objects.create(
+            user=self.user, skills=["Python"],
+            target_role="Software Engineer", target_role_category="software_engineering",
+        )
+
+    def test_registration_and_license_executive_is_not_software_engineering(self):
+        def fake_workindia_scraper(keyword, max_results):
+            return [{
+                "title": "Registration & License Executive",
+                "company": "Hoog Software Private Limited",
+                "raw_text": (
+                    "Role: Registration & License Executive\n"
+                    "Company: Hoog Software Private Limited\n"
+                    "Location: Indore\n"
+                    "Experience: 1-2 years"
+                ),
+                "json_ld": [],
+                "application_url": "https://www.workindia.in/jobs/registration-license-executive-123/",
+            }]
+
+        gemini_state = GeminiRunState()
+        gemini_state.disable("simulated quota exhaustion for this test")
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"workindia": fake_workindia_scraper}), \
+             patch("jobs.scraping_service.GeminiRunState", return_value=gemini_state):
+            summary = run_scrape(self.user, sites=["workindia"], max_results_per_site=3)
+
+        self.assertEqual(summary["added"], 1)
+        job = JobPosting.objects.get(title="Registration & License Executive")
+        self.assertNotEqual(job.role_category, "software_engineering")
+        self.assertEqual(job.role_category, "other")
 
 
 class LivePerViewerRoleFilterTests(TestCase):

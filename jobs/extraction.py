@@ -168,6 +168,12 @@ def classify_role_category(text: str) -> tuple[str, str | None]:
             contents=(
                 "Classify this job into EXACTLY ONE category from this list "
                 f"(reply with ONLY the category key, nothing else): {', '.join(_ROLE_CATEGORY_KEYS)}\n\n"
+                "Base your answer on the job's ACTUAL ROLE/TITLE and its "
+                "responsibilities. Do NOT classify based on the company's "
+                "name or industry (e.g. a company with 'Software' in its "
+                "name is not automatically a software_engineering role if "
+                "the job itself, e.g. 'Registration & License Executive', "
+                "is a different function).\n\n"
                 f"Job:\n{text[:2000]}"
             ),
         )

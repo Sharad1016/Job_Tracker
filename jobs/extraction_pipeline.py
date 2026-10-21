@@ -29,6 +29,7 @@ classify_role_category() in extraction.py for why.
 """
 
 import logging
+import re
 
 from .jsonld_extraction import jobposting_to_fields
 from .rules_extraction import extract_experience, extract_salary, extract_employment_type
@@ -48,21 +49,65 @@ _CATEGORY_KEYWORDS = {
     "software_engineering": ["developer", "engineer", "programmer", "software", "backend", "frontend", "full stack", "sde", "devops"],
     "data_analytics": ["data scientist", "data analyst", "machine learning", "ml engineer", "data engineer", "analytics"],
     "design": ["designer", "ui/ux", "ux designer", "ui designer", "graphic design"],
-    "sales": ["sales", "business development executive", " bde "],
+    "sales": ["sales", "business development executive", "bde"],
     "marketing": ["marketing", "seo", "content writer", "social media"],
     "operations": ["operations", "ops executive", "logistics"],
     "finance": ["finance", "accountant", "accounting", "audit"],
-    "hr": ["human resources", "recruiter", "talent acquisition"],
+    "hr": ["human resources", "recruiter", "talent acquisition", "hr executive", "hr"],
     "customer_support": ["customer support", "customer service", "support executive", "telecaller"],
 }
 
+# Splits a title into "the actual role part" vs. a trailing employer
+# name that's sometimes appended to scraped titles (e.g. "Sales
+# Executive - Software Company"). Classification must be based on the
+# role, not whatever comes after the separator - see requirement #5.
+_TITLE_ROLE_SPLIT = re.compile(r"\s+(?:[-\u2013\u2014|]|\bat\b|\bfor\b)\s+", re.IGNORECASE)
+
+
+def _match_keywords(text: str) -> str:
+    """
+    Word/phrase-boundary keyword match (not a raw substring check) -
+    avoids things like "hr" matching inside a longer word, or "software"
+    matching as part of an unrelated word. Returns the first matching
+    category, or "" if nothing matches.
+    """
+    padded = f" {text} ".lower()
+    for category, keywords in _CATEGORY_KEYWORDS.items():
+        for kw in keywords:
+            pattern = r"(?<![a-z0-9])" + re.escape(kw.strip()) + r"(?![a-z0-9])"
+            if re.search(pattern, padded):
+                return category
+    return ""
+
 
 def _keyword_classify(title: str, raw_text: str) -> str:
-    text = f" {title} {raw_text} ".lower()
-    for category, keywords in _CATEGORY_KEYWORDS.items():
-        if any(kw in text for kw in keywords):
-            return category
-    return "other"
+    """
+    CLASSIFY THE JOB, NOT THE COMPANY.
+
+    Priority order:
+      1. The role part of the title (title with any trailing "-
+         Employer Name" segment stripped off) - the strongest, most
+         reliable signal.
+      2. The full title, as a safety net for titles that don't split
+         cleanly.
+      3. raw_text, but with any "Company: ..." line stripped out first,
+         so an employer name (e.g. "Hoog Software Private Limited")
+         can never masquerade as a role signal. Only reached when the
+         title itself was inconclusive.
+    """
+    title = title or ""
+
+    role_part = _TITLE_ROLE_SPLIT.split(title, maxsplit=1)[0]
+    category = _match_keywords(role_part)
+    if category:
+        return category
+
+    category = _match_keywords(title)
+    if category:
+        return category
+
+    description_text = re.sub(r"(?im)^\s*company\s*:.*$", "", raw_text or "")
+    return _match_keywords(description_text) or "other"
 
 
 def _is_quota_error(error_text) -> bool:
