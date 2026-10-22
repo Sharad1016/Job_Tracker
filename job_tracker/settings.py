@@ -119,7 +119,7 @@ STATIC_URL = 'static/'
 
 # --- Auth (Phase 4) ---
 LOGIN_URL = 'login'
-LOGIN_REDIRECT_URL = 'paste_job'
+LOGIN_REDIRECT_URL = 'home'
 LOGOUT_REDIRECT_URL = 'home'
 
 
