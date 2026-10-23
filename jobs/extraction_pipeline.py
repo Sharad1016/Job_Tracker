@@ -268,24 +268,43 @@ def process_scraped_item(item: dict, site: str, gemini_state: GeminiRunState) ->
         log.append(f"[Validation] Required field(s) missing after all methods: {', '.join(missing)} -> job discarded")
         return None, log
 
-    # Role classification - a separate, genuinely-AI-appropriate step,
-    # attempted after the job is otherwise valid. Quota-aware and has
-    # a keyword-based fallback so it never hard-blocks on Gemini.
-    if gemini_state.available:
+    # Role classification. The keyword classifier runs FIRST since it's
+    # free (no network call) - Gemini is only invoked when the keyword
+    # classifier can't confidently place the job, i.e. it falls through
+    # to "other". This is not a fake confidence score: "other" is
+    # already _keyword_classify's own existing signal for "no clear
+    # match", so using it as the trigger adds no new concept.
+    keyword_result = _keyword_classify(job["title"], raw_text)
+
+    if keyword_result != "other":
+        role_category = keyword_result
+        log.append(f'Role classification: "{job["title"]}"')
+        log.append("Method: keyword")
+        log.append(f"Category: {role_category}")
+        log.append("Gemini: skipped")
+    elif gemini_state.available:
         gemini_state.calls_made += 1
-        role_category, ai_error = classify_role_category(f"{job['title']}\n{raw_text}")
+        ai_category, ai_error = classify_role_category(f"{job['title']}\n{raw_text}")
+        log.append(f'Role classification: "{job["title"]}"')
+        log.append("Method: keyword")
+        log.append("Result: uncertain")
+        log.append("Gemini: called")
         if ai_error and _is_quota_error(ai_error):
             gemini_state.disable(ai_error)
-            role_category = _keyword_classify(job["title"], raw_text)
-            log.append("[AI] Gemini classification -> quota exhausted, used keyword fallback")
-        elif role_category:
-            log.append("[AI] Gemini classification -> success")
+            role_category = keyword_result  # "other" - no regression, same answer keyword already gave
+            log.append("Gemini: quota exhausted, kept keyword result")
+        elif ai_category in _ROLE_CATEGORY_KEYS:
+            role_category = ai_category
         else:
-            role_category = _keyword_classify(job["title"], raw_text)
-            log.append("[AI] Gemini classification -> inconclusive, used keyword fallback")
+            role_category = keyword_result  # Gemini gave nothing usable - fall back to keyword's "other"
+        log.append(f"Category: {role_category}")
     else:
-        role_category = _keyword_classify(job["title"], raw_text)
-        log.append("[AI] Gemini unavailable -> used keyword fallback for classification")
+        role_category = keyword_result
+        log.append(f'Role classification: "{job["title"]}"')
+        log.append("Method: keyword")
+        log.append("Result: uncertain")
+        log.append("Gemini: unavailable")
+        log.append(f"Category: {role_category}")
 
     job["role_category"] = role_category if role_category in _ROLE_CATEGORY_KEYS else "other"
 

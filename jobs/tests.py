@@ -70,15 +70,18 @@ class ExtractionPipelineTests(TestCase):
 
     def test_quota_error_disables_gemini_for_rest_of_run_and_scraping_continues(self):
         """A 429 on job 1's classification must not crash job 2, and must
-        stop further Gemini calls for the remainder of the run."""
+        stop further Gemini calls for the remainder of the run. Uses
+        deliberately ambiguous titles (no keyword match) so Gemini is
+        actually reached - a keyword-confident title would now skip
+        Gemini entirely and never exercise this path."""
         item1 = {
-            "title": "Backend Engineer", "company": "Acme",
-            "raw_text": "Role: Backend Engineer\nCompany: Acme\nSkills: Python, Django",
+            "title": "Digital Solutions Specialist", "company": "Acme",
+            "raw_text": "Role: Digital Solutions Specialist\nCompany: Acme\nSkills: Communication",
             "json_ld": [],
         }
         item2 = {
-            "title": "Software Developer", "company": "Beta Corp",
-            "raw_text": "Role: Software Developer\nCompany: Beta Corp\nSkills: Java",
+            "title": "Growth Associate", "company": "Beta Corp",
+            "raw_text": "Role: Growth Associate\nCompany: Beta Corp\nSkills: Communication",
             "json_ld": [],
         }
         gemini_state = GeminiRunState()
@@ -97,8 +100,78 @@ class ExtractionPipelineTests(TestCase):
         # job 2 should have used the keyword fallback instead, since Gemini
         # was already disabled by the time it was processed.
         mock_classify.assert_called_once()
-        self.assertEqual(job1["role_category"], "software_engineering")
-        self.assertEqual(job2["role_category"], "software_engineering")
+        # Both titles are keyword-ambiguous, so both correctly land on
+        # "other" - job1 via the quota-disable path, job2 via Gemini
+        # being unavailable outright.
+        self.assertEqual(job1["role_category"], "other")
+        self.assertEqual(job2["role_category"], "other")
+
+    def test_keyword_confident_title_never_calls_gemini(self):
+        """Core promise of the optimization: a title the keyword
+        classifier can confidently place must never touch Gemini at all."""
+        item = {
+            "title": "Python Developer", "company": "Qubixo",
+            "raw_text": "Role: Python Developer\nCompany: Qubixo\nSkills: Python, Django",
+            "json_ld": [],
+        }
+        gemini_state = GeminiRunState()
+
+        with patch("jobs.extraction_pipeline.classify_role_category") as mock_classify:
+            job, log = process_scraped_item(item, "internshala", gemini_state)
+
+        mock_classify.assert_not_called()
+        self.assertEqual(gemini_state.calls_made, 0)
+        self.assertEqual(job["role_category"], "software_engineering")
+        self.assertTrue(any("Gemini: skipped" in line for line in log))
+
+    def test_ambiguous_title_does_call_gemini(self):
+        """The other half of the same promise: a genuinely ambiguous
+        title (no keyword match) must still reach Gemini when it's
+        available."""
+        item = {
+            "title": "Digital Solutions Specialist", "company": "Acme",
+            "raw_text": "Role: Digital Solutions Specialist\nCompany: Acme\nSkills: Communication",
+            "json_ld": [],
+        }
+        gemini_state = GeminiRunState()
+
+        with patch("jobs.extraction_pipeline.classify_role_category", return_value=("customer_support", None)) as mock_classify:
+            job, log = process_scraped_item(item, "internshala", gemini_state)
+
+        mock_classify.assert_called_once()
+        self.assertEqual(gemini_state.calls_made, 1)
+        self.assertEqual(job["role_category"], "customer_support")
+        self.assertTrue(any("Gemini: called" in line for line in log))
+
+    def test_duplicate_job_never_reaches_classification_or_gemini(self):
+        """Dedup happens in run_scrape() before process_scraped_item() is
+        even called, so a duplicate must never touch the classifier or
+        Gemini at all."""
+        JobPosting.objects.create(
+            raw_text="Role: Python Developer", source="internshala",
+            title="Python Developer", company="Qubixo", role_category="software_engineering",
+        )
+
+        def fake_scraper(keyword, max_results):
+            return [{
+                "title": "Python Developer", "company": "Qubixo",
+                "raw_text": "Role: Python Developer\nCompany: Qubixo\nSkills: Python",
+                "json_ld": [],
+            }]
+
+        user = User.objects.create_user(username="dup_tester", password="pw")
+        Profile.objects.create(user=user, skills=["Python"], target_role="Python Developer", target_role_category="software_engineering")
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"internshala": fake_scraper}), \
+             patch("jobs.extraction_pipeline.classify_role_category") as mock_classify, \
+             patch("jobs.extraction_pipeline._keyword_classify") as mock_keyword:
+            summary = run_scrape(user, sites=["internshala"], max_results_per_site=3)
+
+        mock_classify.assert_not_called()
+        mock_keyword.assert_not_called()
+        self.assertEqual(summary["skipped_duplicate"], 1)
+        self.assertEqual(summary["added"], 0)
+        self.assertEqual(JobPosting.objects.filter(title="Python Developer").count(), 1)
 
 
 class RunScrapeTests(TestCase):
