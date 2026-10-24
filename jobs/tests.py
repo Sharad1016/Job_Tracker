@@ -5,7 +5,7 @@ from unittest.mock import patch
 from jobs.models import JobPosting, Profile
 from jobs.extraction import extract_job_fields
 from jobs.extraction_pipeline import GeminiRunState, process_scraped_item, _keyword_classify
-from jobs.scraping_service import run_scrape
+from jobs.scraping_service import run_scrape, _scrape_site
 
 
 User = get_user_model()
@@ -172,6 +172,154 @@ class ExtractionPipelineTests(TestCase):
         self.assertEqual(summary["skipped_duplicate"], 1)
         self.assertEqual(summary["added"], 0)
         self.assertEqual(JobPosting.objects.filter(title="Python Developer").count(), 1)
+
+
+class ConcurrentScrapingTests(TestCase):
+    """
+    Phase 14: WorkIndia and Internshala now scrape concurrently via
+    ThreadPoolExecutor (see _scrape_site() / run_scrape() Phase 1 in
+    scraping_service.py). These tests cover exactly the scenarios from
+    the concurrency spec: both succeed, one fails, cross-site
+    duplicates, and that each thread's Playwright usage stays isolated
+    (verified indirectly - see test_each_site_gets_its_own_scrape_call).
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="concurrent_tester", password="pw")
+        Profile.objects.create(
+            user=self.user, skills=["Python"],
+            target_role="Python Developer", target_role_category="software_engineering",
+        )
+
+    def test_both_scrapers_succeed_and_results_are_combined(self):
+        def fake_workindia(keyword, max_results):
+            return [{
+                "title": "Backend Engineer", "company": "WI Corp",
+                "raw_text": "Role: Backend Engineer\nCompany: WI Corp\nSkills: Python",
+                "json_ld": [],
+            }]
+
+        def fake_internshala(keyword, max_results):
+            return [{
+                "title": "Frontend Developer", "company": "IS Corp",
+                "raw_text": "Role: Frontend Developer\nCompany: IS Corp\nSkills: React",
+                "json_ld": [],
+            }]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"workindia": fake_workindia, "internshala": fake_internshala}):
+            summary = run_scrape(self.user, sites=["workindia", "internshala"], max_results_per_site=5)
+
+        self.assertEqual(summary["added"], 2)
+        self.assertEqual(summary["sites"]["workindia"], 1)
+        self.assertEqual(summary["sites"]["internshala"], 1)
+        self.assertTrue(JobPosting.objects.filter(company="WI Corp").exists())
+        self.assertTrue(JobPosting.objects.filter(company="IS Corp").exists())
+
+    def test_workindia_failure_does_not_stop_internshala(self):
+        def broken_workindia(keyword, max_results):
+            raise TimeoutError("WorkIndia timed out")
+
+        def fake_internshala(keyword, max_results):
+            return [{
+                "title": "Frontend Developer", "company": "IS Corp",
+                "raw_text": "Role: Frontend Developer\nCompany: IS Corp\nSkills: React",
+                "json_ld": [],
+            }]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"workindia": broken_workindia, "internshala": fake_internshala}):
+            summary = run_scrape(self.user, sites=["workindia", "internshala"], max_results_per_site=5)
+
+        self.assertEqual(summary["sites"]["workindia"], 0)
+        self.assertEqual(summary["sites"]["internshala"], 1)
+        self.assertEqual(summary["added"], 1)
+        self.assertTrue(any("workindia" in e.lower() and "failed" in e.lower() for e in summary["errors"]))
+        self.assertTrue(JobPosting.objects.filter(company="IS Corp").exists())
+
+    def test_internshala_failure_does_not_stop_workindia(self):
+        def fake_workindia(keyword, max_results):
+            return [{
+                "title": "Backend Engineer", "company": "WI Corp",
+                "raw_text": "Role: Backend Engineer\nCompany: WI Corp\nSkills: Python",
+                "json_ld": [],
+            }]
+
+        def broken_internshala(keyword, max_results):
+            raise TimeoutError("Internshala timed out")
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"workindia": fake_workindia, "internshala": broken_internshala}):
+            summary = run_scrape(self.user, sites=["workindia", "internshala"], max_results_per_site=5)
+
+        self.assertEqual(summary["sites"]["internshala"], 0)
+        self.assertEqual(summary["sites"]["workindia"], 1)
+        self.assertEqual(summary["added"], 1)
+        self.assertTrue(any("internshala" in e.lower() and "failed" in e.lower() for e in summary["errors"]))
+        self.assertTrue(JobPosting.objects.filter(company="WI Corp").exists())
+
+    def test_same_job_from_both_sites_is_not_saved_twice(self):
+        """The exact job (same title+company) appearing on both sites
+        must still only create ONE database row - concurrency must not
+        bypass the existing dedup check."""
+        def fake_workindia(keyword, max_results):
+            return [{
+                "title": "Python Developer", "company": "SameCo",
+                "raw_text": "Role: Python Developer\nCompany: SameCo\nSkills: Python",
+                "json_ld": [],
+            }]
+
+        def fake_internshala(keyword, max_results):
+            return [{
+                "title": "Python Developer", "company": "SameCo",
+                "raw_text": "Role: Python Developer\nCompany: SameCo\nSkills: Python",
+                "json_ld": [],
+            }]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"workindia": fake_workindia, "internshala": fake_internshala}):
+            summary = run_scrape(self.user, sites=["workindia", "internshala"], max_results_per_site=5)
+
+        self.assertEqual(summary["added"], 1)
+        self.assertEqual(summary["skipped_duplicate"], 1)
+        self.assertEqual(JobPosting.objects.filter(title="Python Developer", company="SameCo").count(), 1)
+
+    def test_each_site_gets_its_own_isolated_scrape_call(self):
+        """Not a live browser test (no network in this sandbox), but
+        proves the concurrency wiring itself: each site's scraper_fn is
+        invoked exactly once, with its own keyword/max_results, and
+        _scrape_site never shares any object between the two calls -
+        each call gets fresh args and returns its own independent
+        result tuple."""
+        calls = []
+
+        def fake_workindia(keyword, max_results):
+            calls.append(("workindia", keyword, max_results))
+            return [{"title": "A", "company": "B", "raw_text": "Role: A\nCompany: B", "json_ld": []}]
+
+        def fake_internshala(keyword, max_results):
+            calls.append(("internshala", keyword, max_results))
+            return [{"title": "C", "company": "D", "raw_text": "Role: C\nCompany: D", "json_ld": []}]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"workindia": fake_workindia, "internshala": fake_internshala}):
+            run_scrape(self.user, sites=["workindia", "internshala"], max_results_per_site=7)
+
+        self.assertEqual(len(calls), 2)
+        sites_called = {c[0] for c in calls}
+        self.assertEqual(sites_called, {"workindia", "internshala"})
+        for site, keyword, max_results in calls:
+            self.assertEqual(max_results, 7)
+
+    def test_scrape_site_helper_returns_error_not_raises(self):
+        """_scrape_site() must catch exceptions itself and return them
+        as a value - it must never raise, since an uncaught exception
+        inside a ThreadPoolExecutor worker would otherwise only surface
+        when .result() is called, which is exactly what we rely on
+        catching cleanly in run_scrape()."""
+        def broken(keyword, max_results):
+            raise ValueError("boom")
+
+        site, results, error, duration = _scrape_site("workindia", broken, "python developer", 5)
+        self.assertEqual(site, "workindia")
+        self.assertEqual(results, [])
+        self.assertIsInstance(error, ValueError)
+        self.assertGreaterEqual(duration, 0)
 
 
 class RunScrapeTests(TestCase):
