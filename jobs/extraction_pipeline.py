@@ -237,9 +237,9 @@ def process_scraped_item(item: dict, site: str, gemini_state: GeminiRunState) ->
     dict_skills = match_skills(raw_text)
     if dict_skills:
         job["skills_required"] = dict_skills
-        log.append(f"[Extraction] Skill dictionary -> found {len(dict_skills)} skill(s)")
+        log.append(f"[EXTRACTION] Description length: {len(raw_text)} | Skills found: {dict_skills}")
     else:
-        log.append("[Extraction] Skill dictionary -> none found")
+        log.append(f"[EXTRACTION] Description length: {len(raw_text)} | Skills found: none")
 
     # 6. Validation
     valid, missing = validate_job(job)

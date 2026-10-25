@@ -18,7 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .models import JobPosting
-from .matching import score_job
+from .matching import score_job, match_breakdown, get_profile_for
 from .scraper import scrape_internshala
 from .workindia_scraper import scrape_workindia
 from .extraction_pipeline import process_scraped_item, GeminiRunState
@@ -35,13 +35,20 @@ def _site_label(site: str) -> str:
     return (site or "unknown").title()
 
 
-def _scrape_site(site: str, scraper_fn, keyword: str, max_results: int):
+def _scrape_site(site: str, scraper_fn, keyword: str, max_results: int, known_pairs: set = None):
     """
     Runs ONE site's scraper function and nothing else - no DB access,
     no extraction, no Gemini. Meant to be submitted to a
     ThreadPoolExecutor, one call per site, so that WorkIndia and
     Internshala's page loads happen at the same time instead of back
     to back.
+
+    known_pairs is a plain read-only set of (title.lower(), company.lower())
+    tuples already in the database, computed ONCE before any thread
+    starts (see run_scrape()) - not a live query. It's handed to the
+    scraper so its detail-page Stage 2 can skip visiting a job that's
+    already saved, rather than fetching a detail page just to have the
+    result discarded as a duplicate afterward.
 
     Thread safety note: scrape_workindia() and scrape_internshala()
     each open their own Playwright browser with their own
@@ -60,7 +67,7 @@ def _scrape_site(site: str, scraper_fn, keyword: str, max_results: int):
     """
     start = time.monotonic()
     try:
-        scraped = scraper_fn(keyword=keyword, max_results=max_results)
+        scraped = scraper_fn(keyword=keyword, max_results=max_results, known_pairs=known_pairs or set())
         scraped = scraped or []
         if not isinstance(scraped, list):
             raise TypeError(f"Scraper returned {type(scraped).__name__}, expected list")
@@ -134,6 +141,20 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
             continue
         valid_sites.append((site, scraper_fn))
 
+    # Phase 15: computed ONCE, up front, as a plain read-only Python set -
+    # not a live DB query from inside a worker thread. Handed to each
+    # scraper so its Stage 2 (detail-page visits) can skip a job that's
+    # already saved, instead of fetching its detail page just to have it
+    # thrown away as a duplicate a moment later in Phase 2 below. This
+    # can't catch a job that's new-this-run but appears on BOTH sites
+    # (that's still deduped normally at save time in Phase 2) - it only
+    # covers jobs that were ALREADY in the database before this run started,
+    # which is exactly what "already complete, don't re-fetch" means.
+    known_pairs = {
+        (t.strip().lower(), c.strip().lower())
+        for t, c in JobPosting.objects.values_list("title", "company")
+    }
+
     scraped_by_site = {}
     if valid_sites:
         print("Starting concurrent scraping...")
@@ -143,7 +164,7 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
         overall_start = time.monotonic()
         with ThreadPoolExecutor(max_workers=len(valid_sites)) as executor:
             futures = [
-                executor.submit(_scrape_site, site, scraper_fn, keyword, max_results_per_site)
+                executor.submit(_scrape_site, site, scraper_fn, keyword, max_results_per_site, known_pairs)
                 for site, scraper_fn in valid_sites
             ]
             for future in as_completed(futures):
@@ -228,13 +249,21 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
             # role. role_category is still stored on every job below -
             # nothing about extraction/classification changed.
 
-            job = JobPosting.objects.create(
+            skills_required = job_fields.get("skills_required") or []
+
+            # Phase 15: build the instance UNSAVED first so match_score
+            # can be computed from its actual skills_required and set
+            # BEFORE the single .save() call - the job should never hit
+            # the database showing 0% just because scoring happened in
+            # a later step. score_job() only reads job.skills_required
+            # (a plain attribute), so this works fine pre-save.
+            job = JobPosting(
                 raw_text=job_fields["raw_text"],
                 source=site,
                 title=job_fields["title"],
                 company=job_fields["company"],
                 location=job_fields.get("location") or "",
-                skills_required=job_fields.get("skills_required") or [],
+                skills_required=skills_required,
                 requirements=job_fields.get("requirements") or [],
                 salary_range=job_fields.get("salary_range") or "",
                 deadline=job_fields.get("deadline") or None,
@@ -243,7 +272,14 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
             )
             job.match_score = score_job(job, user)
             job.save()
-            print(f"[Database] Job saved: {job.title} at {job.company}")
+
+            profile_for_log = get_profile_for(user)
+            breakdown = match_breakdown(skills_required, profile_for_log.skills if profile_for_log else [])
+            print(
+                f"[MATCHING] User skills: {profile_for_log.skills if profile_for_log else []} | "
+                f"Matched skills: {breakdown['matched']} | Match score: {job.match_score}%"
+            )
+            print(f"[SAVE] Job saved: {job.title} at {job.company}")
 
             summary["added"] += 1
             site_added += 1

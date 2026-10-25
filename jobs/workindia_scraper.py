@@ -3,6 +3,7 @@
 from playwright.sync_api import sync_playwright
 
 from .jsonld_extraction import extract_json_ld_jobpostings
+from .detail_page_extraction import extract_description_and_skills
 
 # FIX (confirmed via real page inspection, not guessed): WorkIndia has NO
 # "/job-search/{keyword}-jobs" path at all - that was hitting their custom
@@ -64,7 +65,8 @@ def _pick_text(card, selectors):
     return ""
 
 
-def scrape_workindia(keyword: str = "software engineer", max_results: int = 10) -> list[dict]:
+def scrape_workindia(keyword: str = "software engineer", max_results: int = 10, known_pairs: set = None) -> list[dict]:
+    known_pairs = known_pairs or set()
     results = []
     slug = _resolve_category_slug(keyword)
     url = WORKINDIA_SEARCH_URL.format(slug=slug)
@@ -133,6 +135,47 @@ def scrape_workindia(keyword: str = "software engineer", max_results: int = 10) 
                 "json_ld": json_ld_postings,
                 "application_url": href or "",
             })
+
+        # --- Stage 2 (Phase 15): each job's own detail page. NOTE:
+        # WorkIndia's detail-page HTML structure is UNVERIFIED (no real
+        # saved WorkIndia detail page has been inspected, unlike its
+        # listing page) - only generic best-effort selectors are used
+        # here (see detail_page_extraction.py). One failed/empty detail
+        # page does not drop the job - it just keeps the shorter
+        # listing-page raw_text it already has.
+        for item in results:
+            pair = (item["title"].strip().lower(), item["company"].strip().lower())
+            if pair in known_pairs:
+                print(f"[WorkIndia] Skipping detail page for already-saved job: {item['title']} at {item['company']}")
+                continue
+
+            detail_url = item.get("application_url") or ""
+            if not detail_url:
+                continue
+            try:
+                page.goto(detail_url, wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(1200)
+
+                print(f"[WorkIndia] Fetching detail page: {detail_url}")
+
+                detail_json_ld = extract_json_ld_jobpostings(page.content())
+                description, skills = extract_description_and_skills(page)
+
+                if detail_json_ld:
+                    item["json_ld"] = detail_json_ld
+
+                if skills:
+                    item["raw_text"] += "\nSkills: " + ", ".join(skills)
+                if description:
+                    item["raw_text"] += "\n" + description
+
+                print(
+                    f"[WorkIndia] Detail page fetched: {bool(description or skills)} | "
+                    f"Description length: {len(description)} | Skills found: {skills or 'none'}"
+                )
+            except Exception as e:
+                print(f"[WorkIndia] Detail page failed for {detail_url}: {e}")
+                continue
 
         browser.close()
 

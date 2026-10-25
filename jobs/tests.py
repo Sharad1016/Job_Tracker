@@ -152,7 +152,7 @@ class ExtractionPipelineTests(TestCase):
             title="Python Developer", company="Qubixo", role_category="software_engineering",
         )
 
-        def fake_scraper(keyword, max_results):
+        def fake_scraper(keyword, max_results, **kwargs):
             return [{
                 "title": "Python Developer", "company": "Qubixo",
                 "raw_text": "Role: Python Developer\nCompany: Qubixo\nSkills: Python",
@@ -192,14 +192,14 @@ class ConcurrentScrapingTests(TestCase):
         )
 
     def test_both_scrapers_succeed_and_results_are_combined(self):
-        def fake_workindia(keyword, max_results):
+        def fake_workindia(keyword, max_results, **kwargs):
             return [{
                 "title": "Backend Engineer", "company": "WI Corp",
                 "raw_text": "Role: Backend Engineer\nCompany: WI Corp\nSkills: Python",
                 "json_ld": [],
             }]
 
-        def fake_internshala(keyword, max_results):
+        def fake_internshala(keyword, max_results, **kwargs):
             return [{
                 "title": "Frontend Developer", "company": "IS Corp",
                 "raw_text": "Role: Frontend Developer\nCompany: IS Corp\nSkills: React",
@@ -216,10 +216,10 @@ class ConcurrentScrapingTests(TestCase):
         self.assertTrue(JobPosting.objects.filter(company="IS Corp").exists())
 
     def test_workindia_failure_does_not_stop_internshala(self):
-        def broken_workindia(keyword, max_results):
+        def broken_workindia(keyword, max_results, **kwargs):
             raise TimeoutError("WorkIndia timed out")
 
-        def fake_internshala(keyword, max_results):
+        def fake_internshala(keyword, max_results, **kwargs):
             return [{
                 "title": "Frontend Developer", "company": "IS Corp",
                 "raw_text": "Role: Frontend Developer\nCompany: IS Corp\nSkills: React",
@@ -236,14 +236,14 @@ class ConcurrentScrapingTests(TestCase):
         self.assertTrue(JobPosting.objects.filter(company="IS Corp").exists())
 
     def test_internshala_failure_does_not_stop_workindia(self):
-        def fake_workindia(keyword, max_results):
+        def fake_workindia(keyword, max_results, **kwargs):
             return [{
                 "title": "Backend Engineer", "company": "WI Corp",
                 "raw_text": "Role: Backend Engineer\nCompany: WI Corp\nSkills: Python",
                 "json_ld": [],
             }]
 
-        def broken_internshala(keyword, max_results):
+        def broken_internshala(keyword, max_results, **kwargs):
             raise TimeoutError("Internshala timed out")
 
         with patch("jobs.scraping_service.SITE_SCRAPERS", {"workindia": fake_workindia, "internshala": broken_internshala}):
@@ -259,14 +259,14 @@ class ConcurrentScrapingTests(TestCase):
         """The exact job (same title+company) appearing on both sites
         must still only create ONE database row - concurrency must not
         bypass the existing dedup check."""
-        def fake_workindia(keyword, max_results):
+        def fake_workindia(keyword, max_results, **kwargs):
             return [{
                 "title": "Python Developer", "company": "SameCo",
                 "raw_text": "Role: Python Developer\nCompany: SameCo\nSkills: Python",
                 "json_ld": [],
             }]
 
-        def fake_internshala(keyword, max_results):
+        def fake_internshala(keyword, max_results, **kwargs):
             return [{
                 "title": "Python Developer", "company": "SameCo",
                 "raw_text": "Role: Python Developer\nCompany: SameCo\nSkills: Python",
@@ -289,11 +289,11 @@ class ConcurrentScrapingTests(TestCase):
         result tuple."""
         calls = []
 
-        def fake_workindia(keyword, max_results):
+        def fake_workindia(keyword, max_results, **kwargs):
             calls.append(("workindia", keyword, max_results))
             return [{"title": "A", "company": "B", "raw_text": "Role: A\nCompany: B", "json_ld": []}]
 
-        def fake_internshala(keyword, max_results):
+        def fake_internshala(keyword, max_results, **kwargs):
             calls.append(("internshala", keyword, max_results))
             return [{"title": "C", "company": "D", "raw_text": "Role: C\nCompany: D", "json_ld": []}]
 
@@ -312,7 +312,7 @@ class ConcurrentScrapingTests(TestCase):
         inside a ThreadPoolExecutor worker would otherwise only surface
         when .result() is called, which is exactly what we rely on
         catching cleanly in run_scrape()."""
-        def broken(keyword, max_results):
+        def broken(keyword, max_results, **kwargs):
             raise ValueError("boom")
 
         site, results, error, duration = _scrape_site("workindia", broken, "python developer", 5)
@@ -333,7 +333,7 @@ class RunScrapeTests(TestCase):
         )
 
     def test_run_scrape_saves_a_structurally_complete_job_without_gemini_field_extraction(self):
-        def fake_scraper(keyword, max_results):
+        def fake_scraper(keyword, max_results, **kwargs):
             return [{
                 "title": "Python Developer",
                 "company": "Qubixo",
@@ -354,10 +354,10 @@ class RunScrapeTests(TestCase):
     def test_run_scrape_continues_when_one_site_scraper_raises(self):
         """A single site failing outright (timeout, selector break, etc.)
         must not stop other sites from being scraped."""
-        def broken_scraper(keyword, max_results):
+        def broken_scraper(keyword, max_results, **kwargs):
             raise TimeoutError("selector timed out")
 
-        def working_scraper(keyword, max_results):
+        def working_scraper(keyword, max_results, **kwargs):
             return [{
                 "title": "Backend Developer",
                 "company": "GoodCo",
@@ -399,7 +399,7 @@ class WorkIndiaFullPipelineTests(TestCase):
         )
 
     def test_location_and_salary_reach_the_database(self):
-        def fake_workindia_scraper(keyword, max_results):
+        def fake_workindia_scraper(keyword, max_results, **kwargs):
             # Mirrors exactly what workindia_scraper.py now assembles from
             # a real card (verified against a real saved WorkIndia page).
             raw_text = (
@@ -449,6 +449,138 @@ class WorkIndiaFullPipelineTests(TestCase):
         self.assertIsNotNone(job_fields)
         self.assertEqual(job_fields["location"], "Indore")
         self.assertEqual(job_fields["salary_range"], "Rs. 20000 - Rs. 30000")
+
+
+class DetailPageEnrichedScrapingTests(TestCase):
+    """
+    Phase 15: scrapers now visit each job's own detail page (Stage 2)
+    and append the real description + an explicit "Skills: ..." line to
+    raw_text - see scraper.py / workindia_scraper.py / mail
+    detail_page_extraction.py. These tests simulate exactly what a
+    Stage-2-enriched raw_text looks like (since Playwright/live-network
+    detail-page fetching itself can't run in this sandbox) and verify
+    the EXISTING pipeline - unchanged - correctly turns that into real
+    skills_required and a non-zero match_score, computed BEFORE the row
+    is ever saved (not as a second write).
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="detail_page_tester", password="pw")
+        Profile.objects.create(
+            user=self.user, skills=["Python", "React", "MongoDB"],
+            target_role="Full Stack Developer", target_role_category="software_engineering",
+        )
+
+    def test_detail_page_enriched_job_gets_real_skills_and_nonzero_match_score(self):
+        def fake_internshala_with_detail_page(keyword, max_results, **kwargs):
+            # Mirrors exactly what scraper.py's Stage 2 appends after a
+            # real detail-page visit: a "Skills: ..." line plus the real
+            # description text, on top of the Stage 1 card summary.
+            return [{
+                "title": "Full Stack Developer", "company": "Digital Heroes",
+                "raw_text": (
+                    "Role: Full Stack Developer\nCompany: Digital Heroes\nLocation: Lucknow\n"
+                    "Skills: React, Node.js, Python, MongoDB, MySQL\n"
+                    "Own the end-to-end development of full-stack web applications using React, "
+                    "Node.js, and Python. Architect scalable RESTful APIs with MongoDB integration."
+                ),
+                "json_ld": [],
+                "application_url": "https://internshala.com/jobs/detail/full-stack-developer-123",
+            }]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"internshala": fake_internshala_with_detail_page}), \
+             patch("jobs.extraction_pipeline.classify_role_category", return_value=("software_engineering", None)):
+            summary = run_scrape(self.user, sites=["internshala"], max_results_per_site=5)
+
+        self.assertEqual(summary["added"], 1)
+        job = JobPosting.objects.get(title="Full Stack Developer", company="Digital Heroes")
+
+        # The database must NOT contain just "Role:/Company:/Location:" -
+        # the real description text must be in there.
+        self.assertIn("Architect scalable RESTful APIs", job.raw_text)
+        self.assertNotEqual(job.raw_text.strip().count("\n"), 2)  # more than the old 3-line summary
+
+        # Real skills, not empty
+        self.assertGreater(len(job.skills_required), 0)
+        for expected_skill in ["React", "Python", "MongoDB"]:
+            self.assertIn(expected_skill, job.skills_required)
+
+        # Match score genuinely non-zero (user has Python/React/MongoDB -
+        # 3 of the job's 5 skills) - NOT artificially forced, this is the
+        # real calculate_match_score() result.
+        self.assertGreater(job.match_score, 0.0)
+        expected_score = round((3 / 5) * 100, 1)  # 3 matched of 5 required
+        self.assertEqual(job.match_score, expected_score)
+
+    def test_job_with_genuinely_no_matching_skills_still_scores_zero(self):
+        """Explicit requirement: never artificially force score above 0 -
+        a job with real skills the user genuinely doesn't have must
+        still show 0%, not be padded."""
+        def fake_scraper(keyword, max_results, **kwargs):
+            return [{
+                "title": "Sales Executive", "company": "RetailCo",
+                "raw_text": (
+                    "Role: Sales Executive\nCompany: RetailCo\n"
+                    "Skills: Salesforce, Negotiation, Cold Calling\n"
+                    "Drive B2B sales pipeline and manage client relationships."
+                ),
+                "json_ld": [],
+                "application_url": "",
+            }]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"internshala": fake_scraper}):
+            summary = run_scrape(self.user, sites=["internshala"], max_results_per_site=5)
+
+        job = JobPosting.objects.get(title="Sales Executive")
+        self.assertEqual(job.match_score, 0.0)
+
+    def test_detail_page_failure_still_saves_job_with_listing_only_data(self):
+        """A broken/unreachable detail page must not stop the job from
+        being saved - it just falls back to whatever Stage 1 (the
+        listing page) already found, exactly like before this change."""
+        def fake_scraper_detail_page_failed(keyword, max_results, **kwargs):
+            # Simulates Stage 2 failing silently and item keeping only
+            # its Stage 1 raw_text - no Skills:/description line added.
+            return [{
+                "title": "Backend Developer", "company": "SomeCo",
+                "raw_text": "Role: Backend Developer\nCompany: SomeCo\nLocation: Pune",
+                "json_ld": [],
+                "application_url": "https://internshala.com/jobs/detail/broken-link",
+            }]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"internshala": fake_scraper_detail_page_failed}):
+            summary = run_scrape(self.user, sites=["internshala"], max_results_per_site=5)
+
+        self.assertEqual(summary["added"], 1)
+        job = JobPosting.objects.get(title="Backend Developer", company="SomeCo")
+        self.assertEqual(job.location, "Pune")  # Stage 1 data still saved fine
+
+    def test_known_pairs_is_passed_to_scraper_and_skips_already_saved_jobs(self):
+        """run_scrape() must compute known_pairs from the DB ONCE up
+        front and pass it to the scraper, so Stage 2 can skip a
+        detail-page visit for a job that's already saved - avoiding
+        wasted requests for jobs about to be discarded as duplicates
+        anyway."""
+        JobPosting.objects.create(
+            raw_text="Role: Backend Developer", source="internshala",
+            title="Backend Developer", company="AlreadyKnownCo", role_category="software_engineering",
+        )
+
+        received_kwargs = {}
+
+        def fake_scraper(keyword, max_results, **kwargs):
+            received_kwargs.update(kwargs)
+            return [{
+                "title": "Backend Developer", "company": "AlreadyKnownCo",
+                "raw_text": "Role: Backend Developer\nCompany: AlreadyKnownCo",
+                "json_ld": [],
+            }]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"internshala": fake_scraper}):
+            run_scrape(self.user, sites=["internshala"], max_results_per_site=5)
+
+        self.assertIn("known_pairs", received_kwargs)
+        self.assertIn(("backend developer", "alreadyknownco"), received_kwargs["known_pairs"])
 
 
 class KeywordRoleClassificationTests(TestCase):
@@ -526,7 +658,7 @@ class WorkIndiaRoleMisclassificationRegressionTests(TestCase):
         )
 
     def test_registration_and_license_executive_is_not_software_engineering(self):
-        def fake_workindia_scraper(keyword, max_results):
+        def fake_workindia_scraper(keyword, max_results, **kwargs):
             return [{
                 "title": "Registration & License Executive",
                 "company": "Hoog Software Private Limited",
@@ -587,7 +719,7 @@ class LivePerViewerRoleFilterTests(TestCase):
     def test_run_scrape_no_longer_discards_off_role_jobs(self):
         """Requirement: jobs must NOT be permanently excluded from the
         database just because they don't match the scraping user's role."""
-        def fake_scraper(keyword, max_results):
+        def fake_scraper(keyword, max_results, **kwargs):
             return [{
                 "title": "Sales Executive", "company": "Gamma Inc",
                 "raw_text": "Role: Sales Executive\nCompany: Gamma Inc\nSkills: Communication",
