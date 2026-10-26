@@ -101,3 +101,43 @@ def extract_description_and_skills(page) -> tuple[str, list[str]]:
                 continue
 
     return description, skills
+
+
+def fetch_detail_page(url: str, timeout_ms: int = 20000) -> dict:
+    """
+    Phase 16: the concurrency-safe entry point for Stage 2. Opens a
+    BRAND NEW, fully self-contained Playwright browser (its own
+    `with sync_playwright() as p:` block, launched and closed entirely
+    within this one function call), visits `url`, and returns the
+    extracted content. Nothing here is created outside this call or
+    shared with any other call - which is exactly what makes it safe
+    to run several of these at once from different threads via
+    ThreadPoolExecutor, the same principle already used for running
+    WorkIndia and Internshala concurrently at the site level (see
+    scraping_service.py's _scrape_site()) - just applied one level
+    deeper, to individual detail pages within one site's Stage 2.
+
+    Never raises. Any failure (timeout, 403, selector miss, network
+    error) is captured in the returned dict's "error" key instead, so
+    a ThreadPoolExecutor worker calling this can never take down the
+    whole pool over one bad job.
+
+    Returns: {"description": str, "skills": list[str], "json_ld": list, "error": str | None}
+    """
+    from playwright.sync_api import sync_playwright
+    from .jsonld_extraction import extract_json_ld_jobpostings
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                page.wait_for_timeout(1200)
+                json_ld = extract_json_ld_jobpostings(page.content())
+                description, skills = extract_description_and_skills(page)
+            finally:
+                browser.close()
+        return {"description": description, "skills": skills, "json_ld": json_ld, "error": None}
+    except Exception as e:
+        return {"description": "", "skills": [], "json_ld": [], "error": str(e)}

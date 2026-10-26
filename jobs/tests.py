@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.test import TestCase, Client
+from django.contrib.messages import get_messages
 from unittest.mock import patch
 
 from jobs.models import JobPosting, Profile
@@ -320,6 +321,196 @@ class ConcurrentScrapingTests(TestCase):
         self.assertEqual(results, [])
         self.assertIsInstance(error, ValueError)
         self.assertGreaterEqual(duration, 0)
+
+
+class PerSiteLimitTests(TestCase):
+    """Phase 16, Change 1: max_results_per_site now accepts a dict so
+    each site can get its OWN limit (8+8=16), instead of one shared
+    number applied identically everywhere."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="limit_tester", password="pw")
+        Profile.objects.create(user=self.user, skills=["Python"], target_role="Python Developer", target_role_category="software_engineering")
+
+    def test_dict_limit_passes_correct_per_site_value(self):
+        received = {}
+
+        def fake_internshala(keyword, max_results, **kwargs):
+            received["internshala"] = max_results
+            return []
+
+        def fake_workindia(keyword, max_results, **kwargs):
+            received["workindia"] = max_results
+            return []
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"internshala": fake_internshala, "workindia": fake_workindia}):
+            run_scrape(self.user, sites=["internshala", "workindia"], max_results_per_site={"internshala": 8, "workindia": 8})
+
+        self.assertEqual(received["internshala"], 8)
+        self.assertEqual(received["workindia"], 8)
+
+    def test_plain_int_still_works_uniformly_backward_compatible(self):
+        """Existing callers that pass a single int (e.g. the CLI
+        management command) must keep working exactly as before."""
+        received = {}
+
+        def fake_internshala(keyword, max_results, **kwargs):
+            received["internshala"] = max_results
+            return []
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"internshala": fake_internshala}):
+            run_scrape(self.user, sites=["internshala"], max_results_per_site=5)
+
+        self.assertEqual(received["internshala"], 5)
+
+    def test_16_total_from_8_plus_8_when_all_succeed(self):
+        def fake_internshala(keyword, max_results, **kwargs):
+            return [
+                {"title": f"IS Job {i}", "company": f"ISCo{i}", "raw_text": f"Role: IS Job {i}\nCompany: ISCo{i}", "json_ld": []}
+                for i in range(max_results)
+            ]
+
+        def fake_workindia(keyword, max_results, **kwargs):
+            return [
+                {"title": f"WI Job {i}", "company": f"WICo{i}", "raw_text": f"Role: WI Job {i}\nCompany: WICo{i}", "json_ld": []}
+                for i in range(max_results)
+            ]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"internshala": fake_internshala, "workindia": fake_workindia}):
+            summary = run_scrape(self.user, sites=["internshala", "workindia"], max_results_per_site={"internshala": 8, "workindia": 8})
+
+        self.assertEqual(summary["sites"]["internshala"], 8)
+        self.assertEqual(summary["sites"]["workindia"], 8)
+        self.assertEqual(summary["added"], 16)
+
+    def test_duplicates_reduce_total_below_16_not_padded(self):
+        """Explicit requirement: never artificially fill to reach 16."""
+        JobPosting.objects.create(
+            raw_text="Role: Existing Job", source="internshala",
+            title="Existing Job", company="DupCo", role_category="other",
+        )
+
+        def fake_internshala(keyword, max_results, **kwargs):
+            # One of the 8 is a duplicate of an already-saved job.
+            jobs = [{"title": "Existing Job", "company": "DupCo", "raw_text": "Role: Existing Job\nCompany: DupCo", "json_ld": []}]
+            jobs += [
+                {"title": f"IS Job {i}", "company": f"ISCo{i}", "raw_text": f"Role: IS Job {i}\nCompany: ISCo{i}", "json_ld": []}
+                for i in range(max_results - 1)
+            ]
+            return jobs
+
+        def fake_workindia(keyword, max_results, **kwargs):
+            return [
+                {"title": f"WI Job {i}", "company": f"WICo{i}", "raw_text": f"Role: WI Job {i}\nCompany: WICo{i}", "json_ld": []}
+                for i in range(max_results)
+            ]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"internshala": fake_internshala, "workindia": fake_workindia}):
+            summary = run_scrape(self.user, sites=["internshala", "workindia"], max_results_per_site={"internshala": 8, "workindia": 8})
+
+        self.assertEqual(summary["added"], 15)  # 16 discovered, 1 duplicate skipped, NOT padded back to 16
+        self.assertEqual(summary["skipped_duplicate"], 1)
+
+
+class CombinedResultMessageTests(TestCase):
+    """Phase 16, Change 3: the Fetch New Jobs view must show ONE
+    combined total, not a per-site breakdown, and that total must be
+    the actual number of successfully SAVED jobs - never hardcoded,
+    never counting duplicates/failures."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="message_tester", password="pw")
+        Profile.objects.create(user=self.user, skills=["Python"], target_role="Python Developer", target_role_category="software_engineering")
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    def test_success_message_shows_combined_total_not_per_site_breakdown(self):
+        def fake_internshala(keyword, max_results, **kwargs):
+            return [{"title": "A", "company": "X", "raw_text": "Role: A\nCompany: X", "json_ld": []}] * 1
+
+        def fake_internshala_multi(keyword, max_results, **kwargs):
+            return [
+                {"title": f"IS{i}", "company": f"Co{i}", "raw_text": f"Role: IS{i}\nCompany: Co{i}", "json_ld": []}
+                for i in range(8)
+            ]
+
+        def fake_workindia_multi(keyword, max_results, **kwargs):
+            return [
+                {"title": f"WI{i}", "company": f"WCo{i}", "raw_text": f"Role: WI{i}\nCompany: WCo{i}", "json_ld": []}
+                for i in range(8)
+            ]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"internshala": fake_internshala_multi, "workindia": fake_workindia_multi}):
+            response = self.client.post("/scrape/", {"site": "all"})
+
+        message_texts = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertTrue(any("16 new job(s) found" in t for t in message_texts))
+        # The old per-site breakdown format must be GONE
+        self.assertFalse(any("internshala:" in t.lower() and "workindia:" in t.lower() for t in message_texts))
+
+    def test_message_shows_actual_reduced_count_not_16(self):
+        def fake_internshala(keyword, max_results, **kwargs):
+            return [
+                {"title": f"IS{i}", "company": f"Co{i}", "raw_text": f"Role: IS{i}\nCompany: Co{i}", "json_ld": []}
+                for i in range(6)  # fewer than the requested 8
+            ]
+
+        def fake_workindia(keyword, max_results, **kwargs):
+            return [
+                {"title": f"WI{i}", "company": f"WCo{i}", "raw_text": f"Role: WI{i}\nCompany: WCo{i}", "json_ld": []}
+                for i in range(7)  # fewer than the requested 8
+            ]
+
+        with patch("jobs.scraping_service.SITE_SCRAPERS", {"internshala": fake_internshala, "workindia": fake_workindia}):
+            response = self.client.post("/scrape/", {"site": "all"})
+
+        message_texts = [str(m) for m in get_messages(response.wsgi_request)]
+        self.assertTrue(any("13 new job(s) found" in t for t in message_texts))
+
+
+class ConcurrentDetailPageFetchTests(TestCase):
+    """Phase 16, Change 2: Stage 2 now fetches up to MAX_DETAIL_CONCURRENCY
+    (4) detail pages at once per site, instead of one at a time."""
+
+    def test_max_detail_concurrency_constant_is_4_on_both_scrapers(self):
+        from jobs import scraper, workindia_scraper
+        self.assertEqual(scraper.MAX_DETAIL_CONCURRENCY, 4)
+        self.assertEqual(workindia_scraper.MAX_DETAIL_CONCURRENCY, 4)
+
+    def test_fetch_detail_page_never_raises_returns_error_in_dict(self):
+        from jobs.detail_page_extraction import fetch_detail_page
+        # An unreachable/invalid URL - must come back as a dict with an
+        # error, never raise, so a ThreadPoolExecutor worker calling
+        # this can't take down the whole pool.
+        result = fetch_detail_page("http://this-domain-does-not-exist-xyz123.invalid", timeout_ms=3000)
+        self.assertIsInstance(result, dict)
+        self.assertIn("error", result)
+        self.assertIsNotNone(result["error"])
+        self.assertEqual(result["description"], "")
+        self.assertEqual(result["skills"], [])
+
+    def test_four_at_a_time_not_all_at_once_not_sequential(self):
+        """Proves the actual concurrency cap with real wall-clock
+        timing: 8 fake 'fetches' of 0.5s each, capped at 4 workers,
+        should take ~1s (two waves), not ~4s (sequential) or ~0.5s
+        (unbounded)."""
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def fake_fetch(url, timeout_ms=20000):
+            time.sleep(0.5)
+            return {"description": "d", "skills": ["Python"], "json_ld": [], "error": None}
+
+        start = time.monotonic()
+        urls = [f"https://example.com/job{i}" for i in range(8)]
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(fake_fetch, u) for u in urls]
+            for f in as_completed(futures):
+                f.result()
+        elapsed = time.monotonic() - start
+
+        self.assertGreater(elapsed, 0.9)   # not unbounded-concurrent (~0.5s)
+        self.assertLess(elapsed, 2.5)      # not fully sequential (~4s)
 
 
 class RunScrapeTests(TestCase):

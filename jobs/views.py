@@ -424,13 +424,19 @@ def run_scraper(request):
         site_param = request.POST.get("site", "all")
         sites = None if site_param == "all" else [site_param]
 
-        summary = run_scrape(request.user, sites=sites, max_results_per_site=5)
+        # Phase 16: per-site limit instead of one shared number - 8+8=16
+        # total, not 16 requested from each site individually.
+        summary = run_scrape(request.user, sites=sites, max_results_per_site={"internshala": 8, "workindia": 8})
 
         if summary["added"]:
+            # summary["added"] is already the correct combined total -
+            # it's incremented once per successfully-SAVED job across
+            # ALL sites (see scraping_service.py Phase 2), not per site.
+            # Deliberately not showing the site-by-site breakdown here
+            # anymore (Phase 16) - just one clean combined count.
             messages.success(
                 request,
-                f"Fetched {summary['added']} new job(s) matching '{summary['keyword']}' "
-                f"({', '.join(f'{s}: {c}' for s, c in summary['sites'].items())}).",
+                f"{summary['added']} new job(s) found matching '{summary['keyword']}'.",
             )
         else:
             messages.warning(

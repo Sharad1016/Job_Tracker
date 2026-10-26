@@ -88,6 +88,15 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
     only touched when that pipeline genuinely can't recover a required
     field, or for role classification (see extraction_pipeline.py).
 
+    max_results_per_site accepts EITHER:
+      - a plain int - the same limit is used for every site (this is
+        the original behavior, kept for backward compatibility with
+        existing callers/tests that pass a single number), OR
+      - a dict like {"internshala": 8, "workindia": 8} - each site gets
+        its OWN limit. This is how views.py now calls it (Phase 16) to
+        get an 8+8=16 total instead of one shared number applied to
+        every site identically.
+
     NOTE: role_category is still classified and stored on every job
     here (unchanged), but jobs are NO LONGER discarded at scrape time
     for not matching the scraping user's target_role_category. Every
@@ -113,6 +122,11 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
     # a fresh GeminiRunState is created per call, so a quota exhaustion
     # here can never leak into a different request/user later.
     gemini_state = GeminiRunState()
+
+    def _limit_for(site: str) -> int:
+        if isinstance(max_results_per_site, dict):
+            return max_results_per_site.get(site, 5)
+        return max_results_per_site
 
     summary = {
         "keyword": keyword,
@@ -164,7 +178,7 @@ def run_scrape(user, sites=None, max_results_per_site=5) -> dict:
         overall_start = time.monotonic()
         with ThreadPoolExecutor(max_workers=len(valid_sites)) as executor:
             futures = [
-                executor.submit(_scrape_site, site, scraper_fn, keyword, max_results_per_site, known_pairs)
+                executor.submit(_scrape_site, site, scraper_fn, keyword, _limit_for(site), known_pairs)
                 for site, scraper_fn in valid_sites
             ]
             for future in as_completed(futures):

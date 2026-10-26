@@ -1,9 +1,16 @@
 """WorkIndia scraper."""
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from playwright.sync_api import sync_playwright
 
 from .jsonld_extraction import extract_json_ld_jobpostings
-from .detail_page_extraction import extract_description_and_skills
+from .detail_page_extraction import fetch_detail_page
+
+# Phase 16: same concurrency cap as Internshala's Stage 2 - see
+# scraper.py for the full explanation. Each concurrent fetch opens its
+# own independent Playwright browser.
+MAX_DETAIL_CONCURRENCY = 4
 
 # FIX (confirmed via real page inspection, not guessed): WorkIndia has NO
 # "/job-search/{keyword}-jobs" path at all - that was hitting their custom
@@ -136,46 +143,52 @@ def scrape_workindia(keyword: str = "software engineer", max_results: int = 10, 
                 "application_url": href or "",
             })
 
-        # --- Stage 2 (Phase 15): each job's own detail page. NOTE:
-        # WorkIndia's detail-page HTML structure is UNVERIFIED (no real
-        # saved WorkIndia detail page has been inspected, unlike its
-        # listing page) - only generic best-effort selectors are used
-        # here (see detail_page_extraction.py). One failed/empty detail
-        # page does not drop the job - it just keeps the shorter
-        # listing-page raw_text it already has.
+        # --- Stage 2 (Phase 16): each job's own detail page, fetched
+        # CONCURRENTLY - up to MAX_DETAIL_CONCURRENCY (4) at once (see
+        # scraper.py for the full rolling-window explanation, identical
+        # pattern here). NOTE: WorkIndia's detail-page HTML structure is
+        # UNVERIFIED (no real saved WorkIndia detail page has been
+        # inspected, unlike its listing page) - only generic best-effort
+        # selectors are used here (see detail_page_extraction.py). One
+        # failed/empty detail page does not drop the job - it just keeps
+        # the shorter listing-page raw_text it already has.
+        to_fetch = []
         for item in results:
             pair = (item["title"].strip().lower(), item["company"].strip().lower())
             if pair in known_pairs:
                 print(f"[WorkIndia] Skipping detail page for already-saved job: {item['title']} at {item['company']}")
                 continue
+            if item.get("application_url"):
+                to_fetch.append(item)
 
-            detail_url = item.get("application_url") or ""
-            if not detail_url:
-                continue
-            try:
-                page.goto(detail_url, wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(1200)
+        if to_fetch:
+            with ThreadPoolExecutor(max_workers=min(MAX_DETAIL_CONCURRENCY, len(to_fetch))) as executor:
+                future_to_item = {
+                    executor.submit(fetch_detail_page, item["application_url"]): item
+                    for item in to_fetch
+                }
+                for future in as_completed(future_to_item):
+                    item = future_to_item[future]
+                    detail_url = item["application_url"]
+                    result = future.result()
 
-                print(f"[WorkIndia] Fetching detail page: {detail_url}")
+                    if result["error"]:
+                        print(f"[WorkIndia] Detail page failed for {detail_url}: {result['error']}")
+                        continue
 
-                detail_json_ld = extract_json_ld_jobpostings(page.content())
-                description, skills = extract_description_and_skills(page)
+                    print(f"[WorkIndia] Fetching detail page: {detail_url}")
 
-                if detail_json_ld:
-                    item["json_ld"] = detail_json_ld
+                    if result["json_ld"]:
+                        item["json_ld"] = result["json_ld"]
+                    if result["skills"]:
+                        item["raw_text"] += "\nSkills: " + ", ".join(result["skills"])
+                    if result["description"]:
+                        item["raw_text"] += "\n" + result["description"]
 
-                if skills:
-                    item["raw_text"] += "\nSkills: " + ", ".join(skills)
-                if description:
-                    item["raw_text"] += "\n" + description
-
-                print(
-                    f"[WorkIndia] Detail page fetched: {bool(description or skills)} | "
-                    f"Description length: {len(description)} | Skills found: {skills or 'none'}"
-                )
-            except Exception as e:
-                print(f"[WorkIndia] Detail page failed for {detail_url}: {e}")
-                continue
+                    print(
+                        f"[WorkIndia] Detail page fetched: {bool(result['description'] or result['skills'])} | "
+                        f"Description length: {len(result['description'])} | Skills found: {result['skills'] or 'none'}"
+                    )
 
         browser.close()
 

@@ -1,14 +1,23 @@
 """Internshala scraper."""
 
 from urllib.parse import urljoin
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from playwright.sync_api import sync_playwright
 
 from .jsonld_extraction import extract_json_ld_jobpostings
-from .detail_page_extraction import extract_description_and_skills
+from .detail_page_extraction import fetch_detail_page
 
 INTERNSHALA_BASE_URL = "https://internshala.com"
 INTERNSHALA_SEARCH_URL = "https://internshala.com/jobs/{keyword}-jobs"
+
+# Phase 16: cap on how many detail pages get fetched AT THE SAME TIME
+# within one site's Stage 2. Each concurrent fetch opens its own
+# complete, independent Playwright browser (see
+# detail_page_extraction.fetch_detail_page) - 4 at once is a deliberate
+# middle ground between speed and not launching e.g. 8 full browsers
+# simultaneously just for one site.
+MAX_DETAIL_CONCURRENCY = 4
 
 
 def _clean_text(value):
@@ -118,40 +127,52 @@ def scrape_internshala(keyword: str = "python", max_results: int = 10, known_pai
                 "application_url": detail_url,
             })
 
-        # --- Stage 2: each job's own detail page ---
+        # --- Stage 2 (Phase 16): each job's own detail page, fetched
+        # CONCURRENTLY - up to MAX_DETAIL_CONCURRENCY (4) at once, not
+        # all of them simultaneously. ThreadPoolExecutor(max_workers=4)
+        # naturally keeps at most 4 in flight at any moment: as soon as
+        # one finishes, the next queued job starts - a rolling window
+        # capped at 4, rather than a strict "wait for all 4, then start
+        # the next 4" barrier. This never exceeds the 4-at-once limit
+        # and is more efficient than forced batching (a slow job 2
+        # doesn't block job 5 from starting once job 1 finishes).
+        to_fetch = []
         for item in results:
             pair = (item["title"].strip().lower(), item["company"].strip().lower())
             if pair in known_pairs:
                 print(f"[Internshala] Skipping detail page for already-saved job: {item['title']} at {item['company']}")
                 continue
+            if item.get("application_url"):
+                to_fetch.append(item)
 
-            detail_url = item.get("application_url") or ""
-            if not detail_url:
-                continue
-            try:
-                page.goto(detail_url, wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(1200)
+        if to_fetch:
+            with ThreadPoolExecutor(max_workers=min(MAX_DETAIL_CONCURRENCY, len(to_fetch))) as executor:
+                future_to_item = {
+                    executor.submit(fetch_detail_page, item["application_url"]): item
+                    for item in to_fetch
+                }
+                for future in as_completed(future_to_item):
+                    item = future_to_item[future]
+                    detail_url = item["application_url"]
+                    result = future.result()  # fetch_detail_page() never raises - always a dict
 
-                print(f"[Internshala] Fetching detail page: {detail_url}")
+                    if result["error"]:
+                        print(f"[Internshala] Detail page failed for {detail_url}: {result['error']}")
+                        continue
 
-                detail_json_ld = extract_json_ld_jobpostings(page.content())
-                description, skills = extract_description_and_skills(page)
+                    print(f"[Internshala] Fetching detail page: {detail_url}")
 
-                if detail_json_ld:
-                    item["json_ld"] = detail_json_ld  # detail-page JSON-LD is more reliable than the listing page's
+                    if result["json_ld"]:
+                        item["json_ld"] = result["json_ld"]  # detail-page JSON-LD is more reliable than the listing page's
+                    if result["skills"]:
+                        item["raw_text"] += "\nSkills: " + ", ".join(result["skills"])
+                    if result["description"]:
+                        item["raw_text"] += "\n" + result["description"]
 
-                if skills:
-                    item["raw_text"] += "\nSkills: " + ", ".join(skills)
-                if description:
-                    item["raw_text"] += "\n" + description
-
-                print(
-                    f"[Internshala] Detail page fetched: {bool(description or skills)} | "
-                    f"Description length: {len(description)} | Skills found: {skills or 'none'}"
-                )
-            except Exception as e:
-                print(f"[Internshala] Detail page failed for {detail_url}: {e}")
-                continue
+                    print(
+                        f"[Internshala] Detail page fetched: {bool(result['description'] or result['skills'])} | "
+                        f"Description length: {len(result['description'])} | Skills found: {result['skills'] or 'none'}"
+                    )
 
         browser.close()
 
