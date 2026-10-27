@@ -2,11 +2,14 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, Client
 from django.contrib.messages import get_messages
 from unittest.mock import patch
+import json
 
 from jobs.models import JobPosting, Profile
 from jobs.extraction import extract_job_fields
 from jobs.extraction_pipeline import GeminiRunState, process_scraped_item, _keyword_classify
 from jobs.scraping_service import run_scrape, _scrape_site
+from jobs import skill_dictionary, resume_parser
+from google.genai import errors as genai_errors
 
 
 User = get_user_model()
@@ -700,7 +703,13 @@ class DetailPageEnrichedScrapingTests(TestCase):
         # 3 of the job's 5 skills) - NOT artificially forced, this is the
         # real calculate_match_score() result.
         self.assertGreater(job.match_score, 0.0)
-        expected_score = round((3 / 5) * 100, 1)  # 3 matched of 5 required
+        # Phase 17: the expanded dictionary's alias system now ALSO
+        # correctly recognizes "RESTful APIs" in the description as
+        # "REST API" (previously missed entirely, since only the
+        # literal string "REST API" was recognized before aliases
+        # existed) - so the job's real skill count is 6, not 5. This is
+        # a genuine accuracy improvement, not a regression.
+        expected_score = round((3 / 6) * 100, 1)  # 3 matched of 6 required
         self.assertEqual(job.match_score, expected_score)
 
     def test_job_with_genuinely_no_matching_skills_still_scores_zero(self):
@@ -772,6 +781,135 @@ class DetailPageEnrichedScrapingTests(TestCase):
 
         self.assertIn("known_pairs", received_kwargs)
         self.assertIn(("backend developer", "alreadyknownco"), received_kwargs["known_pairs"])
+
+
+class PythonResumeSkillExtractionTests(TestCase):
+    """
+    Phase 17: Python-primary resume skill extraction. Covers
+    skill_dictionary.extract_resume_skills() (pure Python, no Gemini)
+    directly, plus resume_parser.extract_skills_from_resume() for the
+    Gemini-validation-of-unknowns layer on top.
+    """
+
+    def test_basic_skills(self):
+        result = skill_dictionary.extract_resume_skills("Skills: Python, Django, React, MongoDB")
+        for skill in ["Python", "Django", "React", "MongoDB"]:
+            self.assertIn(skill, result["known"])
+
+    def test_case_variations_collapse_to_one_canonical_entry(self):
+        result = skill_dictionary.extract_resume_skills("python PYTHON Python")
+        self.assertEqual(result["known"].count("Python"), 1)
+
+    def test_aliases_normalize_to_canonical_name(self):
+        for variant in ["NodeJS", "Node JS", "node.js"]:
+            self.assertEqual(skill_dictionary.normalize_skill(variant), "Node.js")
+
+    def test_stack_detection(self):
+        stacks = skill_dictionary.detect_stacks("I have MERN Stack development experience.")
+        self.assertIn("MERN", stacks)
+
+    def test_stack_components_expand_correctly(self):
+        components = skill_dictionary.expand_stack_components(["MERN"])
+        for skill in ["MongoDB", "Express.js", "React", "Node.js"]:
+            self.assertIn(skill, components)
+
+    def test_skills_detected_inside_project_description_sentence(self):
+        text = "Developed a web application using Python, Django, React and PostgreSQL."
+        result = skill_dictionary.extract_resume_skills(text)
+        for skill in ["Python", "Django", "React", "PostgreSQL"]:
+            self.assertIn(skill, result["known"])
+
+    def test_skills_detected_inside_experience_description(self):
+        text = "Experience\nBuilt REST APIs using FastAPI and PostgreSQL for a production system."
+        result = skill_dictionary.extract_resume_skills(text)
+        for skill in ["FastAPI", "PostgreSQL"]:
+            self.assertIn(skill, result["known"])
+
+    def test_unknown_skill_is_flagged_not_silently_added(self):
+        text = "Skills\nPython, Django, React, LangChain"
+        result = skill_dictionary.extract_resume_skills(text)
+        self.assertIn("Python", result["known"])
+        self.assertIn("LangChain", result["unknown"])
+        self.assertNotIn("LangChain", result["known"])
+
+    def test_stack_plus_explicit_skills_both_present(self):
+        text = "Skills: Python\nMERN Stack developer with 2 years experience."
+        result = skill_dictionary.extract_resume_skills(text)
+        self.assertIn("Python", result["known"])
+        self.assertIn("React", result["known"])  # from MERN expansion
+        self.assertIn("MongoDB", result["known"])
+
+
+class ResumeParserGeminiValidationTests(TestCase):
+    """resume_parser.extract_skills_from_resume(): Gemini is called
+    AT MOST ONCE per upload, only for unknown terms - never for
+    already-known skills, and never required for the upload to
+    succeed."""
+
+    def test_known_skills_only_never_calls_gemini(self):
+        text = "Skills: Python, Django, React, MongoDB"
+        with patch("jobs.resume_parser._get_client") as mock_client:
+            result = resume_parser.extract_skills_from_resume(text)
+        mock_client.assert_not_called()
+        for skill in ["Python", "Django", "React", "MongoDB"]:
+            self.assertIn(skill, result)
+
+    def test_gemini_confirms_unknown_technical_skill_gets_added(self):
+        text = "Skills\nPython, Django, LangChain"
+
+        def fake_generate_content(model, contents, config):
+            class FakeResponse:
+                text = json.dumps({"valid_skills": ["LangChain"]})
+            return FakeResponse()
+
+        with patch("jobs.resume_parser._get_client") as mock_client:
+            mock_client.return_value.models.generate_content.side_effect = fake_generate_content
+            result = resume_parser.extract_skills_from_resume(text)
+
+        self.assertIn("Python", result)
+        self.assertIn("LangChain", result)
+        # Confirmed skill should now be recognized by the dictionary itself
+        self.assertEqual(skill_dictionary.normalize_skill("LangChain"), "LangChain")
+
+    def test_gemini_rejects_unknown_term_it_is_not_added(self):
+        text = "Skills\nPython, Passionate Team Player"
+
+        def fake_generate_content(model, contents, config):
+            class FakeResponse:
+                text = json.dumps({"valid_skills": []})  # rejected
+            return FakeResponse()
+
+        with patch("jobs.resume_parser._get_client") as mock_client:
+            mock_client.return_value.models.generate_content.side_effect = fake_generate_content
+            result = resume_parser.extract_skills_from_resume(text)
+
+        self.assertIn("Python", result)
+        self.assertNotIn("Passionate Team Player", result)
+
+    def test_gemini_unavailable_known_skills_still_returned(self):
+        """Explicit core requirement: a 503/unavailable Gemini must
+        NEVER break the resume upload - known skills come back
+        regardless."""
+        text = "Skills\nPython, Django, React, SomeUnknownTerm"
+
+        def always_fails(*a, **k):
+            raise genai_errors.APIError(
+                503, {"error": {"code": 503, "message": "high demand", "status": "UNAVAILABLE"}}
+            )
+
+        with patch("jobs.resume_parser._get_client") as mock_client, \
+             patch("jobs.resume_parser.time.sleep"):  # skip the real retry delay in tests
+            mock_client.return_value.models.generate_content.side_effect = always_fails
+            result = resume_parser.extract_skills_from_resume(text)  # must NOT raise
+
+        for skill in ["Python", "Django", "React"]:
+            self.assertIn(skill, result)
+        self.assertNotIn("SomeUnknownTerm", result)  # unvalidated, correctly excluded
+
+    def test_duplicate_skills_not_added_twice(self):
+        text = "Skills: Python, python, PYTHON, Django"
+        result = resume_parser.extract_skills_from_resume(text)
+        self.assertEqual(sum(1 for s in result if s.lower() == "python"), 1)
 
 
 class KeywordRoleClassificationTests(TestCase):
