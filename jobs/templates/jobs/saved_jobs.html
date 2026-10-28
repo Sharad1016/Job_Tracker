@@ -20,4 +20,5 @@
     No saved jobs yet. Go to <a href="{% url 'job_matches' %}" style="color:var(--primary); font-weight:600;">Job Matches</a> and save one.
 </div>
 {% endfor %}
+{% include "jobs/_pagination.html" %}
 {% endblock %}

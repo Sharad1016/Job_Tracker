@@ -5,12 +5,33 @@ from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
 from django.db.models import Avg, Q
+from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 
 from .forms import PasteJobForm, SignupForm, ProfileForm, ResumeUploadForm
 from .models import JobPosting, Profile, Application
 from .extraction import extract_job_fields
 from .resume_parser import extract_text_from_file, extract_skills_from_resume
 from .matching import score_job, get_profile_for, match_breakdown
+
+JOBS_PER_PAGE = 10
+
+
+def _paginate(object_list, page_number):
+    """
+    Shared pagination helper for the three job-listing views
+    (job_matches, saved_jobs, applications_by_status). Falls back to a
+    sensible page instead of raising: an invalid/non-integer ?page=
+    value falls back to page 1; a page number beyond the last page
+    falls back to the last valid page (or page 1 if the list is
+    empty - Paginator allows an empty page 1 by default).
+    """
+    paginator = Paginator(object_list, JOBS_PER_PAGE)
+    try:
+        return paginator.page(page_number)
+    except PageNotAnInteger:
+        return paginator.page(1)
+    except EmptyPage:
+        return paginator.page(paginator.num_pages) if paginator.num_pages else paginator.page(1)
 
 # Palette for the letter-avatar circles on job cards. Picked once per
 # company via a hash, so the same company always gets the same color
@@ -229,13 +250,20 @@ def job_matches(request):
     # Match" ordering is correct for whoever's actually looking.
     jobs_with_display.sort(key=lambda x: x["live_score"], reverse=True)
 
+    # Paginate the FINAL, already-sorted list - not the initial
+    # JobPosting queryset. live_score is computed in Python, not a
+    # database field, so pagination has to happen after sorting or the
+    # per-page order would be wrong.
+    page_obj = _paginate(jobs_with_display, request.GET.get("page"))
+
     profile_exists = bool(profile and profile.skills)
 
     return render(
         request,
         "jobs/job_matches.html",
         {
-            "jobs_with_display": jobs_with_display,
+            "jobs_with_display": page_obj,
+            "page_obj": page_obj,
             "query": query,
             "profile_exists": profile_exists,
             "profile": profile,
@@ -323,15 +351,24 @@ def toggle_save(request, job_id):
 @login_required
 def saved_jobs(request):
     """Lists jobs THIS user has saved."""
-    applications = Application.objects.filter(user=request.user, status="saved").select_related("job")
+    # Explicit ordering added here (Phase 18) - required for correct,
+    # consistent pagination. An unordered queryset can silently
+    # duplicate or skip rows across pages, which wasn't a problem when
+    # the whole list rendered at once, but is a real bug once paginated.
+    applications = (
+        Application.objects.filter(user=request.user, status="saved")
+        .select_related("job")
+        .order_by("-applied_date")
+    )
+    page_obj = _paginate(applications, request.GET.get("page"))
     jobs_with_display = [
         {"job": app.job, "logo_color": _logo_color(app.job.company), "application": app}
-        for app in applications
+        for app in page_obj
     ]
     return render(
         request,
         "jobs/saved_jobs.html",
-        {"jobs_with_display": jobs_with_display, "active_nav": "saved"},
+        {"jobs_with_display": jobs_with_display, "page_obj": page_obj, "active_nav": "saved"},
     )
 
 
@@ -364,9 +401,10 @@ def applications_by_status(request, status):
         .select_related("job")
         .order_by("-updated_at")
     )
+    page_obj = _paginate(applications, request.GET.get("page"))
     jobs_with_display = [
         {"job": app.job, "logo_color": _logo_color(app.job.company), "application": app}
-        for app in applications
+        for app in page_obj
     ]
 
     return render(
@@ -374,6 +412,7 @@ def applications_by_status(request, status):
         "jobs/status_list.html",
         {
             "jobs_with_display": jobs_with_display,
+            "page_obj": page_obj,
             "status_label": NAV_STATUS_LABELS[status],
             "active_nav": status,
         },

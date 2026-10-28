@@ -4,7 +4,7 @@ from django.contrib.messages import get_messages
 from unittest.mock import patch
 import json
 
-from jobs.models import JobPosting, Profile
+from jobs.models import JobPosting, Profile, Application
 from jobs.extraction import extract_job_fields
 from jobs.extraction_pipeline import GeminiRunState, process_scraped_item, _keyword_classify
 from jobs.scraping_service import run_scrape, _scrape_site
@@ -1012,6 +1012,111 @@ class WorkIndiaRoleMisclassificationRegressionTests(TestCase):
         job = JobPosting.objects.get(title="Registration & License Executive")
         self.assertNotEqual(job.role_category, "software_engineering")
         self.assertEqual(job.role_category, "other")
+
+
+class PaginationTests(TestCase):
+    """
+    Phase 18: Job Matches, Saved Jobs, and Applied/OA/Interview all
+    show 10 per page via Django's built-in Paginator. Covers exactly
+    the scenarios from the pagination spec: >10 items, search-term
+    persistence across pages, <10 items, empty list, and an invalid
+    ?page= value.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="page_tester", password="pw")
+        Profile.objects.create(
+            user=self.user, skills=["Python"],
+            target_role="Python Developer", target_role_category="software_engineering",
+        )
+        self.client = Client()
+        self.client.force_login(self.user)
+
+    def _make_jobs(self, count, title_prefix="Job"):
+        jobs = []
+        for i in range(count):
+            jobs.append(JobPosting.objects.create(
+                raw_text=f"Role: {title_prefix} {i}", source="manual",
+                title=f"{title_prefix} {i}", company=f"Co{i}",
+                role_category="software_engineering", skills_required=["Python"],
+            ))
+        return jobs
+
+    def test_job_matches_shows_exactly_10_per_page(self):
+        self._make_jobs(15)
+        response = self.client.get("/matches/")
+        self.assertEqual(len(response.context["page_obj"]), 10)
+        self.assertEqual(response.context["page_obj"].paginator.num_pages, 2)
+
+    def test_job_matches_page_2_shows_remaining_5(self):
+        self._make_jobs(15)
+        response = self.client.get("/matches/", {"page": 2})
+        self.assertEqual(len(response.context["page_obj"]), 5)
+
+    def test_job_matches_live_score_sort_order_preserved_across_pages(self):
+        """Jobs with different skill overlaps must stay correctly
+        ordered by live_score across the page boundary, not reshuffled
+        by pagination."""
+        for i in range(12):
+            JobPosting.objects.create(
+                raw_text=f"Role: Job {i}", source="manual", title=f"Job {i}", company=f"Co{i}",
+                role_category="software_engineering",
+                # Every 3rd job matches (has Python); the rest don't -
+                # scores should still sort correctly across pages.
+                skills_required=["Python"] if i % 3 == 0 else ["Java", "Rust"],
+            )
+        response_p1 = self.client.get("/matches/")
+        response_p2 = self.client.get("/matches/", {"page": 2})
+        scores_p1 = [item["live_score"] for item in response_p1.context["page_obj"]]
+        scores_p2 = [item["live_score"] for item in response_p2.context["page_obj"]]
+        all_scores = scores_p1 + scores_p2
+        self.assertEqual(all_scores, sorted(all_scores, reverse=True))
+
+    def test_search_query_persists_across_pagination_links(self):
+        self._make_jobs(15, title_prefix="Backend Developer")
+        response = self.client.get("/matches/", {"q": "Backend", "page": 1})
+        self.assertEqual(response.context["query"], "Backend")
+        self.assertContains(response, "q=Backend")  # the Next link must carry the search term
+
+    def test_fewer_than_10_items_no_broken_pagination(self):
+        self._make_jobs(3)
+        response = self.client.get("/matches/")
+        self.assertEqual(response.context["page_obj"].paginator.num_pages, 1)
+        # The pagination bar shouldn't render controls for a single page
+        self.assertNotContains(response, "Next →")
+
+    def test_empty_list_still_shows_empty_state(self):
+        response = self.client.get("/matches/")
+        self.assertContains(response, "No jobs yet")
+
+    def test_invalid_page_number_falls_back_gracefully(self):
+        self._make_jobs(15)
+        response = self.client.get("/matches/", {"page": "not-a-number"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["page_obj"].number, 1)
+
+    def test_page_number_out_of_range_falls_back_to_last_page(self):
+        self._make_jobs(15)
+        response = self.client.get("/matches/", {"page": 999})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["page_obj"].number, 2)  # last valid page
+
+    def test_saved_jobs_paginated(self):
+        jobs = self._make_jobs(15)
+        for job in jobs:
+            Application.objects.create(user=self.user, job=job, status="saved")
+        response = self.client.get("/saved/")
+        self.assertEqual(len(response.context["jobs_with_display"]), 10)
+        self.assertEqual(response.context["page_obj"].paginator.num_pages, 2)
+
+    def test_applied_status_list_paginated(self):
+        jobs = self._make_jobs(12)
+        for job in jobs:
+            Application.objects.create(user=self.user, job=job, status="applied")
+        response = self.client.get("/applied/")
+        self.assertEqual(len(response.context["jobs_with_display"]), 10)
+        response_p2 = self.client.get("/applied/", {"page": 2})
+        self.assertEqual(len(response_p2.context["jobs_with_display"]), 2)
 
 
 class LivePerViewerRoleFilterTests(TestCase):
